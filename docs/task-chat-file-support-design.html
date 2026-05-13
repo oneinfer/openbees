@@ -1,0 +1,888 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TaskChat File Support Design Plan</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --surface-2: #f0f3f6;
+      --ink: #17202a;
+      --muted: #5f6b7a;
+      --line: #d9e0e8;
+      --accent: #006d77;
+      --accent-2: #8a5a00;
+      --danger: #a93535;
+      --ok: #1e7a46;
+      --shadow: 0 18px 50px rgba(25, 35, 45, 0.10);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, rgba(0, 109, 119, 0.08), transparent 280px),
+        var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    code, pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    .page {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 40px 0 72px;
+    }
+
+    header {
+      display: grid;
+      gap: 18px;
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      font-size: clamp(32px, 5vw, 58px);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 820px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      padding: 5px 12px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    main {
+      display: grid;
+      gap: 18px;
+    }
+
+    section,
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: var(--shadow);
+    }
+
+    section {
+      padding: 24px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    p:last-child {
+      margin-bottom: 0;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 16px;
+    }
+
+    .span-4 {
+      grid-column: span 4;
+    }
+
+    .span-5 {
+      grid-column: span 5;
+    }
+
+    .span-6 {
+      grid-column: span 6;
+    }
+
+    .span-7 {
+      grid-column: span 7;
+    }
+
+    .span-8 {
+      grid-column: span 8;
+    }
+
+    .span-12 {
+      grid-column: span 12;
+    }
+
+    .card {
+      min-height: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 18px;
+    }
+
+    .decision {
+      display: grid;
+      gap: 12px;
+      border-left: 4px solid var(--accent);
+      background: #eef8f8;
+      padding: 16px 18px;
+    }
+
+    .warning {
+      border-left-color: var(--accent-2);
+      background: #fff8eb;
+    }
+
+    .danger {
+      border-left-color: var(--danger);
+      background: #fff1f1;
+    }
+
+    .label {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .flow-step {
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 14px;
+      min-height: 118px;
+    }
+
+    .flow-step strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .flow-step span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .wireframe {
+      display: grid;
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+      padding: 16px;
+    }
+
+    .chat-shell {
+      display: grid;
+      gap: 10px;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    .bubble-row {
+      display: flex;
+    }
+
+    .bubble-row.user {
+      justify-content: flex-end;
+    }
+
+    .bubble,
+    .composer {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+      padding: 12px 14px;
+      font-size: 13px;
+    }
+
+    .bubble {
+      max-width: 78%;
+    }
+
+    .bubble.user {
+      background: #eef1f4;
+    }
+
+    .attachment-tray {
+      display: grid;
+      gap: 8px;
+      border-top: 1px solid var(--line);
+      margin: 12px -14px 0;
+      padding: 10px 14px 0;
+    }
+
+    .attachment-chip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-2);
+      padding: 8px 10px;
+      color: var(--ink);
+    }
+
+    .attachment-chip span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .composer-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-top: 1px solid var(--line);
+      margin: 10px -14px 0;
+      padding: 10px 14px 0;
+      color: var(--muted);
+    }
+
+    .icon-button {
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      display: inline-grid;
+      place-items: center;
+      background: var(--surface);
+      color: var(--ink);
+      font-weight: 800;
+    }
+
+    pre {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #101820;
+      color: #e9f2f3;
+      padding: 16px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 11px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface-2);
+      color: var(--ink);
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .status {
+      color: var(--ok);
+      font-weight: 750;
+    }
+
+    .risk {
+      color: var(--danger);
+      font-weight: 750;
+    }
+
+    @media (max-width: 860px) {
+      .grid,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .span-4,
+      .span-5,
+      .span-6,
+      .span-7,
+      .span-8,
+      .span-12 {
+        grid-column: auto;
+      }
+
+      .page {
+        width: min(100% - 20px, 1120px);
+        padding-top: 24px;
+      }
+
+      section {
+        padding: 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div class="eyebrow">Minions design plan</div>
+      <h1>File support for <code>TaskChat.tsx</code></h1>
+      <p class="lead">
+        Let users attach local files to a task chat turn, upload them into the Minions workspace,
+        and pass reliable file paths to the Hermes agent while preserving streaming chat and projected history.
+      </p>
+        <div class="meta">
+          <span class="pill">Scope: chat attachments</span>
+          <span class="pill">Primary file: client/src/components/TaskChat.tsx</span>
+          <span class="pill">Compared with Hermes WebUI</span>
+          <span class="pill">Reviewed: May 10, 2026</span>
+        </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>Recommendation</h2>
+        <div class="decision">
+          <span class="label">Recommended architecture</span>
+          <p>
+            Use a staged attachment flow: upload files first to a task-scoped workspace directory,
+            then send the chat message as JSON with attachment metadata. The server builds an
+            agent-facing message that includes the uploaded file paths, while the UI renders clean
+            attachment chips instead of exposing transport metadata.
+          </p>
+        </div>
+        <p class="muted">
+          This keeps the current SSE streaming model intact and avoids introducing a Minions-owned
+          message table. Hermes can remain the source of truth for transcript history. Hermes WebUI
+          uses the same broad shape: queue files in the composer, upload before chat start, send
+          attachment metadata with the chat request, and keep attachment metadata out of provider
+          history.
+        </p>
+      </section>
+
+      <section>
+        <h2>Current Shape</h2>
+        <div class="grid">
+          <div class="card span-6">
+            <h3>Client</h3>
+            <ul>
+              <li><code>TaskChat.tsx</code> owns a single <code>input</code> string and calls <code>sendMessage(taskId, text, settings)</code>.</li>
+              <li><code>useChat.ts</code> posts JSON to <code>POST /api/tasks/:id/messages</code> and subscribes to <code>/live</code> over SSE.</li>
+              <li><code>FileBrowserPage.tsx</code> already demonstrates multiple file upload through <code>uploadFileEntries()</code>.</li>
+            </ul>
+          </div>
+          <div class="card span-6">
+            <h3>Server</h3>
+            <ul>
+              <li><code>server/routes/chat.ts</code> accepts only <code>content: string</code> for messages.</li>
+              <li><code>server/routes/files.ts</code> has a Multer-backed upload route, but it requires an existing target directory.</li>
+              <li><code>server/live-chat.ts</code> stores an in-memory user message and assistant stream snapshot.</li>
+              <li><code>server/workers/hermes_worker.py</code> projects Hermes SessionDB rows back into <code>TaskMessage</code> objects.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Hermes WebUI Comparison</h2>
+        <div class="grid">
+          <div class="card span-6">
+            <h3>Patterns worth borrowing</h3>
+            <ul>
+              <li><code>static/ui.js</code> keeps <code>S.pendingFiles</code>, renders a tray, dedupes by filename, and uploads files before the chat request.</li>
+              <li><code>static/messages.js</code> creates a display message with <code>attachments</code> separate from the agent-facing message text.</li>
+              <li><code>api/routes.py</code> stores <code>pending_user_message</code> and <code>pending_attachments</code> before streaming starts, which improves reload/crash recovery.</li>
+              <li><code>api/streaming.py</code> strips display-only metadata like <code>attachments</code> before sending history back to providers.</li>
+              <li>Image files get local thumbnail previews in the composer with <code>URL.createObjectURL()</code>, and blob URLs are revoked on remove.</li>
+              <li>Workspace file drag and drop inserts an <code>@path</code> reference instead of re-uploading a file that is already in the workspace.</li>
+              <li>The upload route rejects oversized payloads early with a 20 MB cap and has regression tests for text, binary, too-large, no-file, and bad-session cases.</li>
+            </ul>
+          </div>
+          <div class="card span-6">
+            <h3>Patterns not to copy directly</h3>
+            <ul>
+              <li>Hermes WebUI hand-parses multipart because it uses Python's standard HTTP server. Minions already uses Express and Multer, so keep Multer.</li>
+              <li>Hermes WebUI stores only attachment filenames for display. Minions should keep structured metadata with absolute <code>path</code>, <code>displayPath</code>, <code>size</code>, and <code>mimeType</code>.</li>
+              <li>Hermes WebUI writes uploads into the session workspace root. Minions should use a task-scoped attachment directory to avoid name collisions and workspace clutter.</li>
+              <li>Hermes WebUI appends <code>[Attached files: ...]</code> into message text. Minions should prefer a parseable sentinel block so projected history can remove metadata cleanly.</li>
+              <li>Hermes WebUI has <code>api/file/raw</code> for persisted image previews. Minions currently only has <code>/api/files/download</code>, so image history thumbnails need a raw/preview endpoint or should stay as file badges for MVP.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>User Experience</h2>
+        <div class="grid">
+          <div class="span-7">
+            <div class="wireframe" aria-label="Task chat file attachment wireframe">
+              <div class="chat-shell">
+                <div class="bubble-row user">
+                  <div class="bubble user">Please compare these invoices.</div>
+                </div>
+                <div class="bubble-row">
+                  <div class="bubble">I will inspect the uploaded files and summarize the differences.</div>
+                </div>
+                <div class="composer">
+                  <div class="muted">Message your assistant...</div>
+                  <div class="attachment-tray">
+                    <div class="attachment-chip">
+                      <span>invoice-april.pdf</span>
+                      <strong>Ready</strong>
+                    </div>
+                    <div class="attachment-chip">
+                      <span>invoice-may.pdf</span>
+                      <strong>Ready</strong>
+                    </div>
+                  </div>
+                  <div class="composer-toolbar">
+                    <span class="icon-button" title="Attach files">+</span>
+                    <span class="muted">Model selector | Reasoning selector</span>
+                    <span class="icon-button" title="Send">^</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card span-5">
+            <h3>Interaction details</h3>
+            <ul>
+              <li>Add a paperclip icon button inside the existing composer toolbar.</li>
+              <li>Support multiple files from the file picker. Drag and drop onto the composer can be added in the same component.</li>
+              <li>Show an attachment tray between the textarea and toolbar with file name, size, status, and remove control.</li>
+              <li>For image drafts, show small local thumbnails with object URLs and revoke those URLs when the file is removed.</li>
+              <li>Support pasted screenshots as image attachments after the file picker path is stable.</li>
+              <li>Enable send when either message text or at least one attachment is present.</li>
+              <li>For an attachment-only turn, use a fallback visible message such as "Please use the attached files."</li>
+              <li>Disable remove and send while the upload or agent stream is active.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Data Flow</h2>
+        <div class="flow">
+          <div class="flow-step">
+            <strong>1. Select</strong>
+            <span>User picks files in <code>TaskChat.tsx</code>. Client validates count, size, and duplicates.</span>
+          </div>
+          <div class="flow-step">
+            <strong>2. Upload</strong>
+            <span>Client posts files to <code>POST /api/tasks/:id/attachments</code> as <code>multipart/form-data</code>.</span>
+          </div>
+          <div class="flow-step">
+            <strong>3. Store</strong>
+            <span>Server writes files under a task-scoped workspace directory and returns metadata.</span>
+          </div>
+          <div class="flow-step">
+            <strong>4. Send</strong>
+            <span>Client posts <code>content</code>, <code>settings</code>, and <code>attachments</code> to the current message route.</span>
+          </div>
+          <div class="flow-step">
+            <strong>5. Stream</strong>
+            <span>Server starts the existing live run and passes an agent-facing message containing file paths.</span>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>API And Types</h2>
+        <div class="grid">
+          <div class="span-6">
+            <h3>Shared types</h3>
+            <pre><code>export interface TaskAttachment {
+  id: string;
+  name: string;
+  path: string;
+  displayPath: string;
+  size: number;
+  mimeType: string | null;
+}
+
+export interface TaskAttachmentUploadResponse {
+  attachments: TaskAttachment[];
+}
+
+export interface TaskMessage {
+  id: string;
+  task_id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  attachments?: TaskAttachment[];
+  thinking?: string;
+  usage?: UsageStats;
+  created_at: number;
+}</code></pre>
+          </div>
+          <div class="span-6">
+            <h3>Client API helpers</h3>
+            <pre><code>export function uploadTaskAttachments(taskId: string, files: File[]) {
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append('files', file, file.name);
+  }
+
+  return request&lt;TaskAttachmentUploadResponse&gt;(
+    `/tasks/${encodeURIComponent(taskId)}/attachments`,
+    { method: 'POST', body: formData },
+  );
+}</code></pre>
+          </div>
+          <div class="span-12">
+            <h3>Message request</h3>
+            <pre><code>POST /api/tasks/:id/messages
+Content-Type: application/json
+
+{
+  "content": "Please summarize these files.",
+  "attachments": [
+    {
+      "id": "att_...",
+      "name": "notes.txt",
+      "path": "/Users/.../.minions/workspace/tasks/&lt;taskId&gt;/attachments/&lt;turnId&gt;/notes.txt",
+      "displayPath": "~/.minions/workspace/tasks/&lt;taskId&gt;/attachments/&lt;turnId&gt;/notes.txt",
+      "size": 18422,
+      "mimeType": "text/plain"
+    }
+  ],
+  "settings": {
+    "model": "selected-model",
+    "reasoningEffort": "medium"
+  }
+}</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Server Design</h2>
+        <div class="grid">
+          <div class="card span-6">
+            <h3>New upload route</h3>
+            <p>
+              Add <code>POST /api/tasks/:id/attachments</code>. It should verify the task exists,
+              create a directory under the Minions workspace, save files there, and return
+              <code>TaskAttachment</code> metadata.
+            </p>
+            <p>
+              Recommended storage path:
+              <code>~/.minions/workspace/tasks/&lt;taskId&gt;/attachments/&lt;timestamp-runId&gt;/&lt;filename&gt;</code>.
+            </p>
+          </div>
+          <div class="card span-6">
+            <h3>Message route changes</h3>
+            <p>
+              Extend <code>POST /api/tasks/:id/messages</code> to accept optional
+              <code>attachments</code>. The visible user message remains clean, but the content
+              passed to Hermes includes a structured attachment manifest.
+            </p>
+            <pre><code>const displayContent = normalizeUserContent(req.body.content, attachments);
+const agentContent = buildAgentContent(displayContent, attachments);
+
+const run = startRun(task.id, sessionId, displayContent, attachments);
+void consumeChatRun(runTask, sessionId, agentContent, run.runId);</code></pre>
+          </div>
+          <div class="card span-12">
+            <h3>History and provider safety</h3>
+            <p>
+              Mirror Hermes WebUI's separation between display metadata and provider-safe history.
+              <code>attachments</code> can exist on <code>TaskMessage</code> and <code>LiveChatMessage</code>,
+              but the worker should pass only provider-safe message fields into model history.
+            </p>
+            <p>
+              Minions already relies on Hermes SessionDB projection, so the cleanest adaptation is:
+              persist the agent-facing sentinel block in Hermes, parse it during projection, return
+              structured attachment metadata to the client, and keep raw attachment JSON out of the
+              visible chat UI.
+            </p>
+          </div>
+          <div class="card span-12">
+            <h3>Agent-facing content</h3>
+            <p>
+              Use a small sentinel block so the worker can later remove it from displayed history
+              while preserving it in the Hermes transcript for agent continuity.
+            </p>
+            <pre><code>Please summarize these files.
+
+&lt;minions_attachments&gt;
+[
+  {
+    "name": "notes.txt",
+    "path": "/Users/.../.minions/workspace/tasks/task-123/attachments/turn-456/notes.txt",
+    "displayPath": "~/.minions/workspace/tasks/task-123/attachments/turn-456/notes.txt",
+    "size": 18422,
+    "mimeType": "text/plain"
+  }
+]
+&lt;/minions_attachments&gt;</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Client Design</h2>
+        <div class="grid">
+          <div class="card span-6">
+            <h3><code>TaskChat.tsx</code></h3>
+            <ul>
+              <li>Import <code>Paperclip</code>, <code>X</code>, <code>FileText</code>, and optionally <code>AlertCircle</code> from <code>lucide-react</code>.</li>
+              <li>Add a hidden <code>&lt;input type="file" multiple&gt;</code> and a visible icon button in the composer toolbar.</li>
+              <li>Add local draft state: <code>attachments</code>, <code>isUploading</code>, <code>attachmentError</code>, and drag-over state.</li>
+              <li>Extract a local <code>AttachmentTray</code> component if the JSX gets dense.</li>
+              <li>Use Hermes WebUI's thumbnail pattern for images: <code>URL.createObjectURL(file)</code> in draft state and <code>URL.revokeObjectURL()</code> on remove/reset.</li>
+              <li>Use Hermes WebUI's paste pattern for screenshots: intercept image clipboard items, convert each blob to a <code>File</code>, and add it to the same tray.</li>
+              <li>Change submit guard from <code>!text</code> to <code>!text &amp;&amp; attachments.length === 0</code>.</li>
+            </ul>
+          </div>
+          <div class="card span-6">
+            <h3><code>useChat.ts</code></h3>
+            <ul>
+              <li>Extend <code>sendMessage</code> to accept optional <code>attachments</code>.</li>
+              <li>Include attachments in the JSON body for <code>POST /messages</code>.</li>
+              <li>Keep SSE event handling unchanged except for copying <code>message.attachments</code> in snapshot helpers.</li>
+              <li>Preserve attachment metadata in optimistic and live snapshots so reload/reconnect behavior matches text turns.</li>
+              <li>Update <code>appendLocalSendError</code> so a failed attachments turn still shows the attempted user content.</li>
+            </ul>
+          </div>
+          <div class="card span-12">
+            <h3>Submit sequence</h3>
+            <pre><code>async function handleSubmit() {
+  const text = input.trim();
+  if ((!text &amp;&amp; attachments.length === 0) || isStreaming || configPending || isUploading) return;
+
+  setIsUploading(true);
+  try {
+    const uploaded = attachments.length
+      ? await uploadTaskAttachments(taskId, attachments.map(item =&gt; item.file))
+      : { attachments: [] };
+
+    setInput('');
+    setAttachments([]);
+    await sendMessage(taskId, text || 'Please use the attached files.', { model, reasoningEffort }, uploaded.attachments);
+  } finally {
+    setIsUploading(false);
+  }
+}</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>History Projection</h2>
+        <div class="decision warning">
+          <span class="label">Important</span>
+          <p>
+            Hermes owns chat history. If we only append attachment paths to the message string,
+            refreshed chat history will show raw manifest text. To keep the UI clean after reload,
+            update <code>_project_session_messages()</code> in <code>server/workers/hermes_worker.py</code>
+            to parse <code>&lt;minions_attachments&gt;</code>, remove it from displayed content,
+            and return <code>attachments</code> on the user <code>TaskMessage</code>.
+          </p>
+        </div>
+        <pre><code>def _extract_minions_attachments(content: str) -&gt; tuple[str, list[dict[str, Any]]]:
+    # Find sentinel block, json.loads it, validate shape, return clean text and attachments.
+    ...
+
+if role == "user":
+    content = _strip_minions_user_scaffold(content)
+    content, attachments = _extract_minions_attachments(content)
+    if attachments:
+        message["attachments"] = attachments</code></pre>
+      </section>
+
+      <section>
+        <h2>Validation And Limits</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Area</th>
+                <th>Recommendation</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Files per turn</td>
+                <td>Default to 10</td>
+                <td>Keeps the composer usable and avoids large multipart requests.</td>
+              </tr>
+              <tr>
+                <td>File size</td>
+                <td>Start at 20 MB per file, then raise only if needed</td>
+                <td>Matches Hermes WebUI's proven cap and avoids large multipart requests; the current Minions upload route has no explicit Multer limits.</td>
+              </tr>
+              <tr>
+                <td>Paths</td>
+                <td>Server-generated task-scoped paths only</td>
+                <td>Prevents a client from attaching arbitrary local paths to a task.</td>
+              </tr>
+              <tr>
+                <td>Filename safety</td>
+                <td>Strip separators, normalize names, and avoid collisions</td>
+                <td>Prevents traversal and accidental overwrite.</td>
+              </tr>
+              <tr>
+                <td>Binary files</td>
+                <td>Allow upload, but pass paths rather than inlining content</td>
+                <td>Agent tools can decide what can be read; the chat route should not inflate context.</td>
+              </tr>
+              <tr>
+                <td>Progress</td>
+                <td>Show indeterminate "Uploading" for MVP</td>
+                <td><code>fetch</code> does not provide portable upload progress; use XHR only if percentage progress is required.</td>
+              </tr>
+              <tr>
+                <td>Image preview</td>
+                <td>Draft thumbnails now, persisted thumbnails later</td>
+                <td>Draft thumbnails can use object URLs immediately; persisted history thumbnails need a Minions raw file route.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Implementation Plan</h2>
+        <ol>
+          <li><span class="status">Types:</span> Add <code>TaskAttachment</code>, <code>TaskAttachmentUploadResponse</code>, and optional <code>attachments</code> on <code>TaskMessage</code> / <code>LiveChatMessage</code>.</li>
+          <li><span class="status">Upload endpoint:</span> Add <code>POST /api/tasks/:id/attachments</code> with task lookup, Multer limits, task-scoped path generation, and response metadata.</li>
+          <li><span class="status">API helper:</span> Add <code>uploadTaskAttachments()</code> in <code>client/src/lib/api.ts</code>.</li>
+          <li><span class="status">Composer UI:</span> Update <code>TaskChat.tsx</code> with file picker, attachment tray, image draft thumbnails, validation messages, drag and drop, and send-state changes.</li>
+          <li><span class="status">Send path:</span> Extend <code>useChat.sendMessage()</code>, <code>server/routes/chat.ts</code>, and <code>server/live-chat.ts</code> to carry attachment metadata.</li>
+          <li><span class="status">Agent prompt:</span> Build an agent-facing attachment manifest with local paths and keep the visible chat content clean.</li>
+          <li><span class="status">Projection:</span> Parse the manifest in <code>hermes_worker.py</code> so refreshed history renders attachment chips.</li>
+          <li><span class="status">Optional workspace references:</span> Later, allow dragging existing workspace files into chat as <code>@path</code> references without uploading duplicates.</li>
+          <li><span class="status">QA:</span> Run <code>npm run build</code>, test text-only sends, file-only sends, mixed sends, image drafts, rejected files, reload after completion, and concurrent send conflict handling.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Risks And Decisions</h2>
+        <div class="grid">
+          <div class="card span-6">
+            <h3>Open decisions</h3>
+            <ul>
+              <li>Should chat support folders on day one, or only multiple files?</li>
+              <li>Is Hermes WebUI's 20 MB per-file limit acceptable for Minions, or do task workflows need a larger cap?</li>
+              <li>Should old attachment directories be cleaned automatically, or retained as task artifacts?</li>
+              <li>Should uploaded files also appear immediately in the existing file browser?</li>
+              <li>Do we want a raw file preview endpoint for persisted image thumbnails, or are file badges enough for the MVP?</li>
+            </ul>
+          </div>
+          <div class="card span-6">
+            <h3>Primary risks</h3>
+            <ul>
+              <li><span class="risk">Transcript noise:</span> avoid raw manifests in chat by updating projection.</li>
+              <li><span class="risk">Path spoofing:</span> verify message attachments were returned by the task upload endpoint and live under the task workspace.</li>
+              <li><span class="risk">Large uploads:</span> add server limits before exposing the composer picker.</li>
+              <li><span class="risk">Orphaned uploads:</span> uploaded files can remain if chat send fails after upload; use task-scoped directories and consider cleanup.</li>
+              <li><span class="risk">Agent capability:</span> uploaded binary files may require existing agent tools or follow-up extraction work.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>MVP Acceptance Criteria</h2>
+        <ul>
+          <li>User can attach one or more files from <code>TaskChat.tsx</code>, remove them before sending, and send with or without text.</li>
+          <li>Files are saved under a task-specific workspace path and never in the app source tree.</li>
+          <li>The assistant receives local file paths in the user turn and can reference them in tool calls.</li>
+          <li>Live streaming behavior remains unchanged after send starts.</li>
+          <li>Reloaded chat history shows the user text and attachment chips, not internal JSON.</li>
+          <li>Text-only chat still behaves exactly as it does today.</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
