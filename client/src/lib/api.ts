@@ -1,6 +1,8 @@
 import type {
   AgentDefaults,
   AgentModelsResponse,
+  AgentRuntime,
+  AgentRuntimesResponse,
   AgentRunSettings,
   CronJob,
   CronRun,
@@ -16,6 +18,7 @@ import type {
   SessionMetadata,
   Task,
   TaskAgentSettings,
+  TaskMode,
   TaskMessage,
   TaskStatus,
   ReasoningEffort,
@@ -84,7 +87,10 @@ export function deleteTask(id: string) {
   return request<{ ok: boolean }>(`/tasks/${id}`, { method: 'DELETE' });
 }
 
-export function patchTask(id: string, fields: { title?: string; description?: string; status?: TaskStatus }) {
+export function patchTask(
+  id: string,
+  fields: { title?: string; description?: string; status?: TaskStatus; workspacePath?: string | null; runtime?: AgentRuntime | null },
+) {
   return request<{ task: Task }>(`/tasks/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(fields),
@@ -100,10 +106,15 @@ export function markTaskViewed(id: string) {
 export function createTask(
   description: string,
   title?: string,
+  workspacePath?: string | null,
+  runtime?: AgentRuntime | null,
+  model?: string | null,
+  reasoningEffort?: ReasoningEffort | null,
+  taskMode?: TaskMode,
 ) {
   return request<{ task: Task }>('/tasks', {
     method: 'POST',
-    body: JSON.stringify({ description, title }),
+    body: JSON.stringify({ description, title, workspacePath, runtime, model, reasoningEffort, taskMode }),
   });
 }
 
@@ -116,18 +127,30 @@ export function fetchSession(taskId: string) {
 }
 
 export function fetchHealth() {
-  return request<{ ok: boolean; hermes: boolean }>('/health');
+  return request<{ ok: boolean; hermes: boolean; runtimes: Record<AgentRuntime, boolean> }>('/health');
 }
 
 export function fetchAgentDefaults() {
   return request<AgentDefaults>('/agent/defaults');
 }
 
-export function fetchAgentModels() {
-  return request<AgentModelsResponse>('/agent/models');
+export function pickWorkspaceDirectory(initialPath?: string | null) {
+  return request<{ path: string | null }>('/system/select-directory', {
+    method: 'POST',
+    body: JSON.stringify({ initialPath: initialPath ?? null }),
+  });
 }
 
-export function updateAgentDefaults(updates: { model?: string | null; reasoningEffort?: ReasoningEffort | null }) {
+export function fetchAgentModels(runtime?: AgentRuntime | null) {
+  const query = runtime ? `?runtime=${encodeURIComponent(runtime)}` : '';
+  return request<AgentModelsResponse>(`/agent/models${query}`);
+}
+
+export function fetchAgentRuntimes() {
+  return request<AgentRuntimesResponse>('/agent/runtimes');
+}
+
+export function updateAgentDefaults(updates: { runtime?: AgentRuntime | null; model?: string | null; reasoningEffort?: ReasoningEffort | null }) {
   return request<AgentDefaults>('/agent/defaults', {
     method: 'PATCH',
     body: JSON.stringify(updates),

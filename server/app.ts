@@ -7,7 +7,8 @@ import { createAgentRouter, createTaskAgentSettingsRouter } from './routes/agent
 import { createCronRouter, createTaskCronRouter } from './routes/cron.js';
 import { skillsRouter } from './routes/skills.js';
 import { filesRouter } from './routes/files.js';
-import { HermesWorkerAdapter } from './adapters/hermes-worker.js';
+import { systemRouter } from './routes/system.js';
+import { AgentRegistry } from './adapters/registry.js';
 import { initSSE, addClient, sendEvent } from './events.js';
 import { getRunStatuses } from './live-chat.js';
 
@@ -15,11 +16,11 @@ const app = express();
 
 app.use(cors());
 
-const adapter = new HermesWorkerAdapter();
+const agents = new AgentRegistry();
 
 app.get('/api/health', async (_req, res) => {
-  const hermes = await adapter.healthCheck();
-  res.json({ ok: true, hermes });
+  const runtimes = await agents.health();
+  res.json({ ok: true, runtimes, hermes: runtimes.hermes });
 });
 
 app.get('/api/events', (req, res) => {
@@ -33,12 +34,13 @@ app.use('/api/files', express.json({ limit: '25mb' }), filesRouter);
 app.use(express.json());
 
 app.use('/api/tasks', tasksRouter);
-app.use('/api/tasks', createTaskCronRouter(adapter));
-app.use('/api/tasks', createTaskAgentSettingsRouter(adapter));
+app.use('/api/tasks', createTaskCronRouter(agents.hermes));
+app.use('/api/tasks', createTaskAgentSettingsRouter(agents));
 app.use('/api/tasks', chatRouter);
-app.use('/api/agent', createAgentRouter(adapter));
-app.use('/api/cron', createCronRouter(adapter));
+app.use('/api/agent', createAgentRouter(agents));
+app.use('/api/cron', createCronRouter(agents.hermes));
 app.use('/api/skills', skillsRouter);
+app.use('/api/system', systemRouter);
 
 app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
   if (!res.headersSent && error && typeof error === 'object' && (error as { type?: string }).type === 'entity.too.large') {
@@ -48,5 +50,5 @@ app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
   next(error);
 });
 
-export { adapter };
+export { agents };
 export default app;

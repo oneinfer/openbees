@@ -2,7 +2,7 @@ import 'dotenv/config';
 import './db/index.js';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import app, { adapter } from './app.js';
+import app, { agents } from './app.js';
 import { mountFrontend, type FrontendCleanup } from './frontend.js';
 import { ensureBundledSkillsLinked } from './skills/catalog.js';
 
@@ -16,7 +16,6 @@ type ShutdownReason = NodeJS.Signals | 'startup-error';
 
 async function main() {
   ensureBundledSkillsLinked();
-  await adapter.start();
   closeFrontend = await mountFrontend(app, httpServer);
   httpServer.listen(PORT);
   await once(httpServer, 'listening');
@@ -56,7 +55,7 @@ async function shutdown(reason: ShutdownReason, exitCode = 0): Promise<void> {
   const results = await Promise.allSettled([
     closeHttpServer(),
     closeFrontend(),
-    adapter.stop(),
+    agents.stop(),
   ]);
 
   for (const result of results) {

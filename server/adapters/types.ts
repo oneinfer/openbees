@@ -1,4 +1,4 @@
-import type { AgentRunSettings, ContextUsage, SessionMetadata, TaskMessage } from '../../shared/types.js';
+import type { AgentModelsResponse, AgentRunSettings, ContextUsage, SessionMetadata, TaskMessage } from '../../shared/types.js';
 
 export type { AgentRunSettings, ContextUsage };
 
@@ -8,6 +8,7 @@ export interface AgentRunOptions {
   task?: {
     id: string;
     title?: string | null;
+    workspacePath?: string | null;
   };
 }
 
@@ -38,6 +39,8 @@ export interface AgentAdapter {
   ): AsyncIterable<StreamEvent>;
 
   healthCheck(): Promise<boolean>;
+
+  getModels(): Promise<AgentModelsResponse>;
 
   getMessages(sessionId: string, taskId: string): Promise<TaskMessage[]>;
 

@@ -6,9 +6,11 @@ import { useChat, ToolProgressEvent } from '../hooks/useChat';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { handleChatKeyDown } from '../lib/keyboard';
 import type { AgentRunSettings } from '../lib/api';
+import type { TaskStatus } from '@shared/types';
 
 interface TaskChatProps {
   taskId: string;
+  taskStatus: TaskStatus;
   initialMessage?: string;
   initialSettings?: AgentRunSettings;
 }
@@ -97,7 +99,7 @@ function ToolCallBlock({ tool }: { tool: ToolProgressEvent }) {
   );
 }
 
-export function TaskChat({ taskId, initialMessage, initialSettings }: TaskChatProps) {
+export function TaskChat({ taskId, taskStatus, initialMessage, initialSettings }: TaskChatProps) {
   const { messages, isStreaming, thinkingContent, activeTools, context, sendMessage, loadMessages } = useChat();
   const [input, setInput] = useState('');
   const [loadedTaskId, setLoadedTaskId] = useState<string | null>(null);
@@ -105,13 +107,15 @@ export function TaskChat({ taskId, initialMessage, initialSettings }: TaskChatPr
   if (startupRef.current.taskId !== taskId) {
     startupRef.current = { taskId, initialMessage, initialSettings };
   }
-  const { defaults, modelGroups, model, setModel, reasoningEffort, setReasoningEffort, isLoading } = useAgentConfig(
+  const { defaults, runtimeOptions, runtime, setRuntime, modelGroups, runtimeDefaultModel, model, setModel, reasoningEffort, setReasoningEffort, isLoading } = useAgentConfig(
     taskId,
     startupRef.current.initialSettings,
   );
   const waitingForTaskSettings = isLoading && !startupRef.current.initialSettings;
   const toolbarDefaults = waitingForTaskSettings ? null : defaults;
   const configPending = waitingForTaskSettings || (!defaults && isLoading);
+  const isPendingTask = taskStatus === 'pending';
+  const inputDisabled = isPendingTask || isStreaming || configPending;
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const didInitialScrollRef = useRef(false);
@@ -127,7 +131,7 @@ export function TaskChat({ taskId, initialMessage, initialSettings }: TaskChatPr
         const firstMessage = startupRef.current.initialMessage;
         if (firstMessage) {
           startupRef.current.initialMessage = undefined;
-          if (loadedMessages.length === 0) {
+          if (loadedMessages.length === 0 && taskStatus !== 'pending') {
             sendMessage(taskId, firstMessage, startupRef.current.initialSettings);
           }
         }
@@ -135,7 +139,7 @@ export function TaskChat({ taskId, initialMessage, initialSettings }: TaskChatPr
       .catch(() => {});
     inputRef.current?.focus();
     return () => { cancelled = true; };
-  }, [taskId, loadMessages, sendMessage]);
+  }, [taskId, taskStatus, loadMessages, sendMessage]);
 
   useLayoutEffect(() => {
     if (loadedTaskId !== taskId || didInitialScrollRef.current) return;
@@ -149,10 +153,10 @@ export function TaskChat({ taskId, initialMessage, initialSettings }: TaskChatPr
 
   const handleSubmit = useCallback(async () => {
     const text = input.trim();
-    if (!text || isStreaming || configPending) return;
+    if (!text || inputDisabled) return;
     setInput('');
-    await sendMessage(taskId, text, { model, reasoningEffort });
-  }, [configPending, input, isStreaming, taskId, sendMessage, model, reasoningEffort]);
+    await sendMessage(taskId, text, { runtime, model, reasoningEffort });
+  }, [input, inputDisabled, taskId, sendMessage, runtime, model, reasoningEffort]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => handleChatKeyDown(e, handleSubmit),
@@ -169,7 +173,9 @@ export function TaskChat({ taskId, initialMessage, initialSettings }: TaskChatPr
           <div className={`${CHAT_COLUMN_CLASS} space-y-3`}>
             {messages.length === 0 && (
               <p className="text-sm text-zinc-400 dark:text-zinc-500 text-center py-12">
-                Start a conversation with your assistant.
+                {isPendingTask
+                  ? 'Move this task to In Progress to activate the assistant.'
+                  : 'Start a conversation with your assistant.'}
               </p>
             )}
             {messages.map((msg, idx) => {
@@ -237,17 +243,22 @@ export function TaskChat({ taskId, initialMessage, initialSettings }: TaskChatPr
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Message your assistant..."
+            placeholder={isPendingTask ? 'Move this task to In Progress to activate it...' : 'Message your assistant...'}
             rows={2}
+            disabled={isPendingTask}
             className="w-full resize-none bg-transparent px-5 pt-3 pb-1 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none leading-relaxed"
           />
           <div className="flex items-center justify-between px-4 pb-3">
             <InputToolbar
+              runtime={runtime}
               model={model}
               reasoningEffort={reasoningEffort}
               defaults={toolbarDefaults}
+              runtimeDefaultModel={runtimeDefaultModel}
+              runtimeOptions={runtimeOptions}
               modelGroups={modelGroups}
-              disabled={isStreaming}
+              disabled={inputDisabled}
+              onRuntimeChange={setRuntime}
               onModelChange={setModel}
               onReasoningEffortChange={setReasoningEffort}
             />
@@ -255,7 +266,7 @@ export function TaskChat({ taskId, initialMessage, initialSettings }: TaskChatPr
               {context && <ContextRing context={context} />}
               <button
                 onClick={handleSubmit}
-                disabled={!input.trim() || isStreaming || configPending}
+                disabled={!input.trim() || inputDisabled}
                 className="p-2 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 disabled:opacity-30 hover:bg-zinc-700 dark:hover:bg-zinc-300 transition-colors"
               >
                 <ArrowUp size={14} />
