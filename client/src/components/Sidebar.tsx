@@ -38,9 +38,10 @@ export function Sidebar() {
   const navigate = useNavigate();
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const projects = useStore((s) => s.projects);
   const tasks = useStore((s) => s.tasks);
   const streamingTaskIds = useStore((s) => s.streamingTaskIds);
-  const projectGroups = useMemo(() => groupTasksByProject(tasks, streamingTaskIds), [tasks, streamingTaskIds]);
+  const projectGroups = useMemo(() => groupTasksByProject(tasks, streamingTaskIds, projects), [projects, tasks, streamingTaskIds]);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set(readExpandedProjects()));
 
   const activeTask = useMemo(() => {
@@ -226,7 +227,7 @@ export function Sidebar() {
             </div>
             {projectGroups.length === 0 ? (
               <div className="rounded-xl border border-dashed border-zinc-200 bg-white/60 px-3 py-3 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
-                Pick a folder on a task and it will show up here as a project.
+                Create a project from the Projects page and it will show up here.
               </div>
             ) : (
               <div className="space-y-2">
@@ -277,7 +278,11 @@ export function Sidebar() {
                       {expanded && (
                         <div className="px-2 pb-2">
                           <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-                            {project.tasks.map((task, index) => {
+                            {project.tasks.length === 0 ? (
+                              <div className="px-3 py-3 text-xs text-zinc-400 dark:text-zinc-500">
+                                No tasks yet
+                              </div>
+                            ) : project.tasks.map((task, index) => {
                               const isTaskActive = location.pathname === `/tasks/${task.id}`;
                               const isStreaming = streamingTaskIds.has(task.id);
 

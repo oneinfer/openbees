@@ -36,6 +36,13 @@ export interface Task {
   last_context_window_tokens: number | null;
 }
 
+export interface Project {
+  path: string;
+  label: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface TaskMessage {
   id: string;
   task_id: string;
@@ -66,6 +73,8 @@ export type BoardEvent =
   | { type: 'task_created'; task: Task }
   | { type: 'task_updated'; task: Task }
   | { type: 'task_deleted'; taskId: string }
+  | { type: 'project_saved'; project: Project }
+  | { type: 'project_deleted'; path: string; taskIds: string[] }
   | { type: 'task_runs_snapshot'; runs: TaskRunState[] }
   | { type: 'task_run_updated'; run: TaskRunState };
 

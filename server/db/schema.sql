@@ -18,6 +18,15 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 
+CREATE TABLE IF NOT EXISTS projects (
+  path              TEXT PRIMARY KEY,
+  label             TEXT,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key               TEXT PRIMARY KEY,
   value             TEXT

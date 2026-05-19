@@ -16,6 +16,7 @@ import type {
   FileUploadResponse,
   FileWriteResponse,
   ContextUsage,
+  Project,
   SessionMetadata,
   Task,
   TaskAgentSettings,
@@ -75,6 +76,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function fetchTasks() {
   return request<{ tasks: Task[] }>('/tasks');
+}
+
+export function fetchProjects() {
+  return request<{ projects: Project[] }>('/projects');
+}
+
+export function createProject(workspacePath: string) {
+  return request<{ project: Project }>('/projects', {
+    method: 'POST',
+    body: JSON.stringify({ workspacePath }),
+  });
+}
+
+export function deleteProject(workspacePath: string) {
+  return request<{ ok: boolean; taskIds: string[] }>('/projects', {
+    method: 'DELETE',
+    body: JSON.stringify({ workspacePath }),
+  });
 }
 
 export function moveTask(id: string, status: TaskStatus) {

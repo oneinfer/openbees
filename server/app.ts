@@ -8,6 +8,7 @@ import { createCronRouter, createTaskCronRouter } from './routes/cron.js';
 import { skillsRouter } from './routes/skills.js';
 import { filesRouter } from './routes/files.js';
 import { systemRouter } from './routes/system.js';
+import { projectsRouter } from './routes/projects.js';
 import { AgentRegistry } from './adapters/registry.js';
 import { initSSE, addClient, sendEvent } from './events.js';
 import { getRunStatuses } from './live-chat.js';
@@ -34,6 +35,7 @@ app.use('/api/files', express.json({ limit: '25mb' }), filesRouter);
 app.use(express.json());
 
 app.use('/api/tasks', tasksRouter);
+app.use('/api/projects', projectsRouter);
 app.use('/api/tasks', createTaskCronRouter(agents.hermes));
 app.use('/api/tasks', createTaskAgentSettingsRouter(agents));
 app.use('/api/tasks', chatRouter);

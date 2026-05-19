@@ -8,11 +8,23 @@ import {
   type ContextUsage,
   type AgentRuntime,
   type TaskMessage,
+  type Project,
 } from '../../shared/types.js';
 
+const stmtAllProjects = db.prepare('SELECT * FROM projects ORDER BY updated_at DESC');
+const stmtGetProject = db.prepare('SELECT * FROM projects WHERE path = ?');
+const stmtDeleteProject = db.prepare('DELETE FROM projects WHERE path = ?');
+const stmtInsertProject = db.prepare(`
+  INSERT INTO projects (path, label, created_at, updated_at)
+  VALUES (@path, @label, @created_at, @updated_at)
+  ON CONFLICT(path) DO UPDATE SET
+    label = excluded.label,
+    updated_at = excluded.updated_at
+`);
 const stmtAllTasks = db.prepare('SELECT * FROM tasks ORDER BY updated_at DESC');
 const stmtTasksByStatus = db.prepare('SELECT * FROM tasks WHERE status = ? ORDER BY updated_at DESC');
 const stmtGetTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
+const stmtTaskIdsByWorkspacePath = db.prepare('SELECT id FROM tasks WHERE workspace_path = ?');
 const stmtInsertTask = db.prepare(`
   INSERT INTO tasks (
     id, title, description, status, task_mode, workspace_path, agent_runtime, agent_model, reasoning_effort,
@@ -26,6 +38,7 @@ const stmtInsertTask = db.prepare(`
   )
 `);
 const stmtDeleteTask = db.prepare('DELETE FROM tasks WHERE id = ?');
+const stmtDeleteTasksByWorkspacePath = db.prepare('DELETE FROM tasks WHERE workspace_path = ?');
 const stmtTouchTask = db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?');
 const stmtMarkTaskViewed = db.prepare(`
   UPDATE tasks
@@ -46,6 +59,36 @@ const stmtInsertTaskMessage = db.prepare(`
   INSERT INTO task_messages (id, task_id, role, content, thinking, created_at)
   VALUES (@id, @task_id, @role, @content, @thinking, @created_at)
 `);
+
+export function getAllProjects(): Project[] {
+  return stmtAllProjects.all() as Project[];
+}
+
+export function getProject(path: string): Project | undefined {
+  return stmtGetProject.get(path) as Project | undefined;
+}
+
+export function saveProject(project: { path: string; label?: string | null }): Project {
+  const now = Date.now();
+  stmtInsertProject.run({
+    path: project.path,
+    label: project.label ?? null,
+    created_at: getProject(project.path)?.created_at ?? now,
+    updated_at: now,
+  });
+  return getProject(project.path) as Project;
+}
+
+export function deleteProject(path: string): { deleted: boolean; taskIds: string[] } {
+  const taskIds = (stmtTaskIdsByWorkspacePath.all(path) as Array<{ id: string }>).map((row) => row.id);
+  const result = db.transaction(() => {
+    const deletedProject = stmtDeleteProject.run(path).changes > 0;
+    if (taskIds.length > 0) stmtDeleteTasksByWorkspacePath.run(path);
+    return deletedProject || taskIds.length > 0;
+  })();
+  return { deleted: result, taskIds };
+}
+
 export function getAllTasks(status?: TaskStatus): Task[] {
   return status ? stmtTasksByStatus.all(status) as Task[] : stmtAllTasks.all() as Task[];
 }

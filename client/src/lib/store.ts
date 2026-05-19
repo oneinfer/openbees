@@ -1,12 +1,17 @@
 import { create } from 'zustand';
-import type { Task, TaskStatus } from '@shared/types';
+import type { Project, Task, TaskStatus } from '@shared/types';
 
 interface AppState {
+  projects: Project[];
   tasks: Task[];
   streamingTaskIds: Set<string>;
+  projectsLoaded: boolean;
   tasksLoaded: boolean;
   sidebarCollapsed: boolean;
 
+  setProjects: (projects: Project[]) => void;
+  upsertProject: (project: Project) => void;
+  removeProject: (path: string, taskIds?: string[]) => void;
   setTasks: (tasks: Task[]) => void;
   upsertTask: (task: Task) => void;
   removeTask: (taskId: string) => void;
@@ -20,10 +25,35 @@ function tasksEqual(a: Task, b: Task): boolean {
 }
 
 export const useStore = create<AppState>((set) => ({
+  projects: [],
   tasks: [],
   streamingTaskIds: new Set<string>(),
+  projectsLoaded: false,
   tasksLoaded: false,
   sidebarCollapsed: localStorage.getItem('sidebarCollapsed') === 'true',
+
+  setProjects: (projects) => set({ projects, projectsLoaded: true }),
+
+  upsertProject: (project) =>
+    set((state) => {
+      const idx = state.projects.findIndex((p) => p.path === project.path);
+      if (idx === -1) return { projects: [project, ...state.projects] };
+      const existing = state.projects[idx];
+      if (existing.updated_at === project.updated_at && existing.label === project.label) return state;
+      const next = [...state.projects];
+      next[idx] = project;
+      return { projects: next };
+    }),
+
+  removeProject: (path, taskIds = []) =>
+    set((state) => {
+      const taskIdSet = new Set(taskIds);
+      const projects = state.projects.filter((project) => project.path !== path);
+      const tasks = state.tasks.filter((task) => task.workspace_path !== path && !taskIdSet.has(task.id));
+      const streamingTaskIds = new Set(state.streamingTaskIds);
+      for (const taskId of taskIds) streamingTaskIds.delete(taskId);
+      return { projects, tasks, streamingTaskIds };
+    }),
 
   setTasks: (tasks) => set({ tasks, tasksLoaded: true }),
 

@@ -1,4 +1,4 @@
-import { TASK_STATUSES, type Task, type TaskStatus } from '@shared/types';
+import { TASK_STATUSES, type Project, type Task, type TaskStatus } from '@shared/types';
 
 const NO_PROJECT_KEY = '__no_project__';
 
@@ -11,6 +11,7 @@ export interface ProjectGroup {
   streamingCount: number;
   statusCounts: Record<TaskStatus, number>;
   tasks: Task[];
+  project?: Project;
 }
 
 export function getProjectLabel(path: string | null | undefined): string {
@@ -33,8 +34,28 @@ export function projectHref(path: string | null | undefined): string {
   return normalized ? `/projects?path=${encodeURIComponent(normalized)}` : '/projects';
 }
 
-export function groupTasksByProject(tasks: Task[], streamingTaskIds?: ReadonlySet<string>): ProjectGroup[] {
+function emptyStatusCounts(): Record<TaskStatus, number> {
+  return Object.fromEntries(TASK_STATUSES.map((status) => [status, 0])) as Record<TaskStatus, number>;
+}
+
+export function groupTasksByProject(tasks: Task[], streamingTaskIds?: ReadonlySet<string>, projects: Project[] = []): ProjectGroup[] {
   const groups = new Map<string, ProjectGroup>();
+
+  for (const project of projects) {
+    const path = normalizeProjectPath(project.path);
+    if (!path) continue;
+    groups.set(path, {
+      key: path,
+      path,
+      label: project.label?.trim() || getProjectLabel(path),
+      taskCount: 0,
+      updatedAt: project.updated_at,
+      streamingCount: 0,
+      statusCounts: emptyStatusCounts(),
+      tasks: [],
+      project,
+    });
+  }
 
   for (const task of tasks) {
     const path = normalizeProjectPath(task.workspace_path);
@@ -50,7 +71,7 @@ export function groupTasksByProject(tasks: Task[], streamingTaskIds?: ReadonlySe
       continue;
     }
 
-    const statusCounts = Object.fromEntries(TASK_STATUSES.map((status) => [status, 0])) as Record<TaskStatus, number>;
+    const statusCounts = emptyStatusCounts();
     statusCounts[task.status] = 1;
 
     groups.set(key, {
@@ -77,7 +98,12 @@ export function groupTasksByProject(tasks: Task[], streamingTaskIds?: ReadonlySe
     });
 }
 
-export function findProjectByPath(tasks: Task[], path: string | null | undefined, streamingTaskIds?: ReadonlySet<string>) {
+export function findProjectByPath(
+  tasks: Task[],
+  path: string | null | undefined,
+  streamingTaskIds?: ReadonlySet<string>,
+  projects?: Project[],
+) {
   const normalized = normalizeProjectPath(path);
-  return groupTasksByProject(tasks, streamingTaskIds).find((group) => group.path === normalized) ?? null;
+  return groupTasksByProject(tasks, streamingTaskIds, projects).find((group) => group.path === normalized) ?? null;
 }
