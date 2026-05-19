@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { ensureHermesEnvironment } from './hermes-setup.mjs';
 import { ensureSupportedNodeVersion } from './runtime.mjs';
 
 ensureSupportedNodeVersion('npm run dev');
+ensureHermesEnvironment();
 
 const require = createRequire(import.meta.url);
 const tsxCliPath = require.resolve('tsx/cli');

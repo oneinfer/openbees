@@ -15,6 +15,12 @@ export function useAgentConfig(taskId?: string, initialSettings?: AgentRunSettin
   const [isLoading, setIsLoading] = useState(true);
   const initialRef = useRef(initialSettings);
 
+  const refreshRuntimes = useCallback(async () => {
+    const result = await fetchAgentRuntimes();
+    setRuntimeOptions(result.options);
+    return result;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
@@ -97,5 +103,6 @@ export function useAgentConfig(taskId?: string, initialSettings?: AgentRunSettin
     setReasoningEffort,
     isLoading,
     replaceDefaults,
+    refreshRuntimes,
   };
 }

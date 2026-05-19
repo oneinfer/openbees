@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bot, Sun, Moon, Monitor } from 'lucide-react';
+import { Bot, CheckCircle2, Download, LoaderCircle, Monitor, Moon, Sun } from 'lucide-react';
 import { useTheme, type ThemePreference } from '../hooks/useTheme';
 import { useAgentConfig } from '../hooks/useAgentConfig';
-import { updateAgentDefaults } from '../lib/api';
+import { installAgentRuntime, updateAgentDefaults } from '../lib/api';
 import { toErrorMessage } from '../lib/format';
 import { ModelPicker, REASONING_LABELS } from './InputToolbar';
 import {
@@ -17,14 +17,19 @@ const themeOptions: { value: ThemePreference; label: string; icon: typeof Sun }[
   { value: 'dark', label: 'Dark', icon: Moon },
 ];
 
+const installRuntimeIds: AgentRuntime[] = ['codex', 'claude_code', 'opencode'];
+
 export function SettingsPage() {
   const { theme, setTheme } = useTheme();
 
-  const { defaults: agentDefaults, runtimeOptions, modelGroups, runtimeDefaultModel, isLoading: isLoadingDefaults, replaceDefaults } = useAgentConfig();
+  const { defaults: agentDefaults, runtimeOptions, modelGroups, runtimeDefaultModel, isLoading: isLoadingDefaults, replaceDefaults, refreshRuntimes } = useAgentConfig();
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [savingDefaults, setSavingDefaults] = useState(false);
   const [savedDefaults, setSavedDefaults] = useState(false);
   const [modelDraft, setModelDraft] = useState('');
+  const [installingRuntime, setInstallingRuntime] = useState<AgentRuntime | null>(null);
+  const [installStatus, setInstallStatus] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!savedDefaults) return;
@@ -43,6 +48,14 @@ export function SettingsPage() {
     setModelDraft(agentDefaults?.model ?? '');
   }, [agentDefaults?.model]);
 
+  useEffect(() => {
+    if (installingRuntime) return;
+    const timer = setInterval(() => {
+      void refreshRuntimes().catch(() => undefined);
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [installingRuntime, refreshRuntimes]);
+
   const saveDefaults = useCallback(async (updates: { runtime?: AgentRuntime | null; model?: string | null; reasoningEffort?: ReasoningEffort | null }) => {
     setSavingDefaults(true);
     setDefaultsError(null);
@@ -58,6 +71,27 @@ export function SettingsPage() {
     }
   }, [replaceDefaults]);
 
+  const installRuntime = useCallback(async (runtime: AgentRuntime) => {
+    const option = runtimeOptions.find((item) => item.id === runtime);
+    if (option?.installed || installingRuntime) return;
+
+    setInstallingRuntime(runtime);
+    setInstallError(null);
+    setInstallStatus(null);
+    try {
+      await installAgentRuntime(runtime);
+      await refreshRuntimes();
+      setInstallStatus(`${option?.label ?? runtime} installed`);
+    } catch (error) {
+      await refreshRuntimes().catch(() => undefined);
+      setInstallError(toErrorMessage(error, 'Install failed'));
+    } finally {
+      setInstallingRuntime(null);
+    }
+  }, [installingRuntime, refreshRuntimes, runtimeOptions]);
+
+  const installableRuntimes = runtimeOptions.filter((runtime) => installRuntimeIds.includes(runtime.id));
+
   return (
     <div className="flex-1 p-6 overflow-y-auto">
       <div className="max-w-2xl space-y-5">
@@ -72,6 +106,45 @@ export function SettingsPage() {
           <p className="mt-2 text-sm leading-5 text-zinc-500 dark:text-zinc-400">
             Tasks can run through Hermes, Codex, Claude Code, or OpenCode. Hermes uses the built-in model catalog; external CLIs can take a typed model id and repo-scoped task context.
           </p>
+          {installableRuntimes.length > 0 && (
+            <div className="mt-4">
+              <div className="flex items-center justify-between gap-4">
+                <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-500">CLI installs</h3>
+                <span
+                  aria-live="polite"
+                  aria-hidden={!installStatus && !installError && !installingRuntime}
+                  className={`text-xs transition-opacity duration-300 ${
+                    installStatus || installError || installingRuntime ? 'opacity-100' : 'opacity-0'
+                  } ${installError ? 'text-red-500' : 'text-zinc-400 dark:text-zinc-500'}`}
+                >
+                  {installError ?? (installingRuntime ? 'Installing...' : installStatus ?? 'Ready')}
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {installableRuntimes.map((runtime) => {
+                  const isInstalling = installingRuntime === runtime.id;
+                  const Icon = isInstalling ? LoaderCircle : runtime.installed ? CheckCircle2 : Download;
+                  return (
+                    <button
+                      key={runtime.id}
+                      type="button"
+                      disabled={Boolean(installingRuntime) || runtime.installed || !runtime.installable}
+                      onClick={() => void installRuntime(runtime.id)}
+                      title={runtime.installed ? `${runtime.label} is installed` : runtime.installCommand ?? `Install ${runtime.label}`}
+                      className={`inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-medium shadow-sm transition-colors disabled:cursor-default ${
+                        runtime.installed
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200'
+                          : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700/70'
+                      }`}
+                    >
+                      {isInstalling ? <Icon size={14} className="animate-spin" /> : <Icon size={14} />}
+                      <span>{runtime.installed ? runtime.label : `Install ${runtime.label}`}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <section

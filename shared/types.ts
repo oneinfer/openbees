@@ -116,6 +116,10 @@ export interface AgentRuntimeOption {
   description: string;
   status: 'ready' | 'configure';
   command: string | null;
+  installed: boolean;
+  installable: boolean;
+  packageName?: string;
+  installCommand?: string;
   modelControl: AgentRuntimeModelControl;
   reasoningControl: AgentRuntimeReasoningControl;
 }
@@ -123,6 +127,15 @@ export interface AgentRuntimeOption {
 export interface AgentRuntimesResponse {
   defaultRuntime: AgentRuntime;
   options: AgentRuntimeOption[];
+}
+
+export interface AgentRuntimeInstallResponse {
+  runtime: AgentRuntime;
+  installed: boolean;
+  command: string | null;
+  packageName: string;
+  installCommand: string;
+  output?: string;
 }
 
 export interface AgentModelOption {

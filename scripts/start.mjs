@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
+import { ensureHermesEnvironment } from './hermes-setup.mjs';
 import { ensureSupportedNodeVersion } from './runtime.mjs';
 
 ensureSupportedNodeVersion('npm run start');
+ensureHermesEnvironment();
 
 const child = spawn(process.execPath, ['dist/server/server/index.js'], {
   stdio: 'inherit',

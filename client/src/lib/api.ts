@@ -2,6 +2,7 @@ import type {
   AgentDefaults,
   AgentModelsResponse,
   AgentRuntime,
+  AgentRuntimeInstallResponse,
   AgentRuntimesResponse,
   AgentRunSettings,
   CronJob,
@@ -148,6 +149,12 @@ export function fetchAgentModels(runtime?: AgentRuntime | null) {
 
 export function fetchAgentRuntimes() {
   return request<AgentRuntimesResponse>('/agent/runtimes');
+}
+
+export function installAgentRuntime(runtime: AgentRuntime) {
+  return request<AgentRuntimeInstallResponse>(`/agent/runtimes/${encodeURIComponent(runtime)}/install`, {
+    method: 'POST',
+  });
 }
 
 export function updateAgentDefaults(updates: { runtime?: AgentRuntime | null; model?: string | null; reasoningEffort?: ReasoningEffort | null }) {
