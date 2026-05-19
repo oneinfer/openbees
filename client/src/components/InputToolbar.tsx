@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Search, Sparkles, Zap, type LucideIcon } from 'lucide-react';
-import { REASONING_EFFORTS, type AgentDefaults, type AgentModelGroup, type ContextUsage, type ReasoningEffort } from '@shared/types';
+import { REASONING_EFFORTS, type AgentDefaults, type AgentModelGroup, type AgentRuntime, type AgentRuntimeOption, type ContextUsage, type ReasoningEffort } from '@shared/types';
 import { formatTokenCount } from '../lib/format';
 
 export function ContextRing({ context }: { context: ContextUsage }) {
@@ -120,7 +120,7 @@ interface ToolbarSelectProps {
   onChange: (value: string) => void;
 }
 
-function ToolbarSelect({
+export function ToolbarSelect({
   icon: Icon,
   value,
   options,
@@ -894,11 +894,15 @@ export function ModelPicker({
 }
 
 interface InputToolbarProps {
+  runtime: AgentRuntime | null;
   model: string | null;
   reasoningEffort: ReasoningEffort | null;
   defaults?: AgentDefaults | null;
+  runtimeDefaultModel?: string | null;
+  runtimeOptions?: AgentRuntimeOption[];
   modelGroups?: AgentModelGroup[];
   disabled?: boolean;
+  onRuntimeChange: (runtime: AgentRuntime | null) => void;
   onModelChange: (model: string | null) => void;
   onReasoningEffortChange: (effort: ReasoningEffort | null) => void;
 }
@@ -928,17 +932,67 @@ function LoadingToolbarButton({
   );
 }
 
+function ModelTextField({
+  value,
+  disabled = false,
+  title,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  disabled?: boolean;
+  title: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label
+      title={title}
+      className="inline-flex h-9 max-w-full items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2.5 text-xs font-medium text-zinc-600 shadow-sm transition-colors focus-within:border-zinc-300 focus-within:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:focus-within:border-zinc-600 dark:focus-within:bg-zinc-700/70"
+    >
+      <Sparkles size={12} className="shrink-0" />
+      <input
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className="min-w-[10rem] max-w-[14rem] bg-transparent text-xs text-zinc-700 outline-none placeholder:text-zinc-400 disabled:cursor-not-allowed dark:text-zinc-200 dark:placeholder:text-zinc-500"
+      />
+    </label>
+  );
+}
+
 export function InputToolbar({
+  runtime,
   model,
   reasoningEffort,
   defaults,
+  runtimeDefaultModel = null,
+  runtimeOptions = [],
   modelGroups = [],
   disabled = false,
+  onRuntimeChange,
   onModelChange,
   onReasoningEffortChange,
 }: InputToolbarProps) {
+  const defaultRuntime = defaults?.runtime ?? 'hermes';
   const defaultModel = defaults?.model ?? null;
   const defaultReasoning = defaults?.reasoningEffort ?? null;
+  const effectiveRuntime = runtime ?? defaultRuntime;
+  const runtimeMeta = runtimeOptions.find((option) => option.id === effectiveRuntime);
+  const modelControl = runtimeMeta?.modelControl ?? 'picker';
+  const reasoningControl = runtimeMeta?.reasoningControl ?? 'picker';
+  const resolvedDefaultModel = runtimeDefaultModel ?? defaultModel;
+  const shouldUsePicker = modelControl === 'picker' && (effectiveRuntime === 'hermes' || modelGroups.length > 0);
+  const shouldUseTextField = modelControl === 'text' || (modelControl === 'picker' && effectiveRuntime !== 'hermes' && modelGroups.length === 0);
+  const runtimeSelectOptions = useMemo<ToolbarSelectOption[]>(
+    () => runtimeOptions.map((option) => ({
+      value: option.id,
+      label: option.status === 'ready' ? option.label : `${option.label} (Configure)`,
+      group: option.status === 'ready' ? 'Ready' : 'Needs setup',
+    })),
+    [runtimeOptions],
+  );
 
   const reasoningOptions = useMemo<ToolbarSelectOption[]>(() => [
     {
@@ -954,6 +1008,7 @@ export function InputToolbar({
   if (!defaults) {
     return (
       <div className="flex items-center gap-2 min-w-0 flex-wrap">
+        <LoadingToolbarButton icon={Sparkles} className="[&>span]:w-20" />
         <LoadingToolbarButton icon={Sparkles} className="[&>span]:w-24" />
         <LoadingToolbarButton icon={Zap} className="[&>span]:w-14" />
       </div>
@@ -962,24 +1017,57 @@ export function InputToolbar({
 
   return (
     <div className="flex items-center gap-2 min-w-0 flex-wrap">
-      <ModelPicker
-        value={model ?? ''}
-        defaultModel={defaultModel}
-        modelGroups={modelGroups}
-        disabled={disabled}
-        title={model ? `Model: ${model}` : defaultModel ? `Inherits ${defaultModel}` : 'Inherits default model'}
-        onChange={(nextModel) => onModelChange(nextModel || null)}
+      <ToolbarSelect
+        icon={Sparkles}
+        value={effectiveRuntime}
+        options={runtimeSelectOptions}
+        disabled={disabled || runtimeSelectOptions.length === 0}
+        title={`Runtime: ${effectiveRuntime}`}
+        labelMaxWidthClass="max-w-[8rem] sm:max-w-[10rem]"
+        minMenuWidth={220}
+        searchable
+        searchPlaceholder="Search runtimes..."
+        onChange={(nextRuntime) => onRuntimeChange((nextRuntime || null) as AgentRuntime | null)}
       />
 
-      <ToolbarSelect
-        icon={Zap}
-        value={reasoningEffort ?? ''}
-        options={reasoningOptions}
-        disabled={disabled}
-        title={reasoningEffort ? `Reasoning: ${reasoningEffort}` : defaultReasoning ? `Inherits ${defaultReasoning}` : 'Inherits default reasoning'}
-        minMenuWidth={180}
-        onChange={(nextReasoning) => onReasoningEffortChange((nextReasoning || null) as ReasoningEffort | null)}
-      />
+      {shouldUsePicker && (
+        <ModelPicker
+          value={model ?? ''}
+          defaultModel={resolvedDefaultModel}
+          modelGroups={modelGroups}
+          disabled={disabled}
+          title={model ? `Model: ${model}` : resolvedDefaultModel ? `Inherits ${resolvedDefaultModel}` : 'Inherits default model'}
+          onChange={(nextModel) => onModelChange(nextModel || null)}
+        />
+      )}
+
+      {shouldUseTextField && (
+        <ModelTextField
+          value={model ?? ''}
+          disabled={disabled}
+          title={model ? `Model: ${model}` : 'Optional model id override'}
+          placeholder="Model id (optional)"
+          onChange={(nextModel) => onModelChange(nextModel.trim() || null)}
+        />
+      )}
+
+      {reasoningControl === 'picker' && (
+        <ToolbarSelect
+          icon={Zap}
+          value={reasoningEffort ?? ''}
+          options={reasoningOptions}
+          disabled={disabled}
+          title={reasoningEffort ? `Reasoning: ${reasoningEffort}` : defaultReasoning ? `Inherits ${defaultReasoning}` : 'Inherits default reasoning'}
+          minMenuWidth={180}
+          onChange={(nextReasoning) => onReasoningEffortChange((nextReasoning || null) as ReasoningEffort | null)}
+        />
+      )}
+
+      {modelControl === 'none' && reasoningControl === 'none' && (
+        <span className="inline-flex h-9 items-center rounded-lg border border-zinc-200 bg-white px-2.5 text-xs text-zinc-500 shadow-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400">
+          Runtime handles its own model/config
+        </span>
+      )}
     </div>
   );
 }

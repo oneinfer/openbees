@@ -21,7 +21,7 @@ export function Column({ status, tasks, streamingTaskIds, isLast = false, onRequ
   const { setNodeRef, isOver } = useDroppable({ id: status });
   const navigate = useNavigate();
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
-  const showAddButton = status === 'in_progress';
+  const showAddButton = status === 'pending';
 
   const openMenu = useCallback((button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect();

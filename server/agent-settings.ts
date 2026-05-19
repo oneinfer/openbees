@@ -1,8 +1,9 @@
-import { REASONING_EFFORTS, type ReasoningEffort, type Task } from '../shared/types.js';
+import { AGENT_RUNTIMES, REASONING_EFFORTS, type AgentRuntime, type ReasoningEffort, type Task } from '../shared/types.js';
 import type { AgentRunSettings } from './adapters/types.js';
 import { isRecord } from './errors.js';
 
 export interface AgentSettingsUpdate {
+  agent_runtime?: AgentRuntime | null;
   agent_model?: string | null;
   reasoning_effort?: ReasoningEffort | null;
 }
@@ -31,6 +32,15 @@ function normalizeModel(value: unknown): string | null | undefined {
   return trimmed || null;
 }
 
+function normalizeRuntime(value: unknown): AgentRuntime | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== 'string' || !(AGENT_RUNTIMES as readonly string[]).includes(value)) {
+    throw new Error(`runtime must be one of: ${AGENT_RUNTIMES.join(', ')}`);
+  }
+  return value as AgentRuntime;
+}
+
 function normalizeReasoningEffort(value: unknown): ReasoningEffort | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;
@@ -42,10 +52,12 @@ function normalizeReasoningEffort(value: unknown): ReasoningEffort | null | unde
 
 function parseSettingsFields(body: unknown): AgentSettingsUpdate {
   const record = isRecord(body) ? body : {};
+  const runtime = normalizeRuntime(firstPresent(record, ['agentRuntime', 'agent_runtime', 'runtime']));
   const model = normalizeModel(firstPresent(record, ['agentModel', 'agent_model', 'model']));
   const reasoningEffort = normalizeReasoningEffort(firstPresent(record, ['reasoningEffort', 'reasoning_effort']));
 
   return {
+    ...(runtime !== undefined ? { agent_runtime: runtime } : {}),
     ...(model !== undefined ? { agent_model: model } : {}),
     ...(reasoningEffort !== undefined ? { reasoning_effort: reasoningEffort } : {}),
   };
@@ -53,6 +65,7 @@ function parseSettingsFields(body: unknown): AgentSettingsUpdate {
 
 export function taskRunSettings(task: Task): AgentRunSettings {
   return {
+    runtime: task.agent_runtime,
     model: task.agent_model,
     reasoningEffort: task.reasoning_effort,
   };

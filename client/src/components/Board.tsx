@@ -29,7 +29,7 @@ export function Board() {
   const upsertTask = useStore((s) => s.upsertTask);
   const removeTask = useStore((s) => s.removeTask);
   const grouped = useMemo(() => {
-    const buckets: Record<TaskStatus, Task[]> = { in_progress: [], in_review: [], done: [] };
+    const buckets: Record<TaskStatus, Task[]> = { pending: [], in_progress: [], in_review: [], done: [] };
     for (const t of tasks) {
       if (t.status in buckets) buckets[t.status].push(t);
     }

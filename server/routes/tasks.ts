@@ -1,8 +1,18 @@
 import { Router } from 'express';
-import { getAllTasks, getTask, insertTask, updateTask, deleteTask, markTaskViewed } from '../db/queries.js';
+import { deleteTask, getAllTasks, getTask, insertTask, markTaskViewed, updateTask } from '../db/queries.js';
+import { parseRunSettingsBody } from '../agent-settings.js';
 import { broadcast } from '../events.js';
-import { TASK_STATUSES } from '../../shared/types.js';
-import type { TaskStatus } from '../../shared/types.js';
+import { toErrorMessage } from '../errors.js';
+import {
+  buildTaskExecutionRequest,
+  buildTaskPlanningRequest,
+  buildTaskPlanningSystemPrompt,
+} from '../prompts/task-agent.js';
+import { defaultRuntime, parseRuntimeValue } from '../runtime-config.js';
+import { startTaskRun } from '../task-runner.js';
+import { parseWorkspacePath } from '../workspace-access.js';
+import { TASK_MODES, TASK_STATUSES } from '../../shared/types.js';
+import type { TaskMode, TaskStatus } from '../../shared/types.js';
 
 export const tasksRouter = Router();
 
@@ -31,10 +41,31 @@ function generateTitle(text: string): string {
   return firstSentence.slice(0, 57) + '...';
 }
 
+function parseTaskMode(value: unknown): TaskMode {
+  if (value === undefined || value === null || value === '') return 'direct';
+  if (typeof value !== 'string' || !(TASK_MODES as readonly string[]).includes(value)) {
+    throw new Error(`taskMode must be one of: ${TASK_MODES.join(', ')}`);
+  }
+  return value as TaskMode;
+}
+
 tasksRouter.post('/', (req, res) => {
   const { description, title } = req.body;
   if (!description || typeof description !== 'string') {
     return res.status(400).json({ error: 'description is required' });
+  }
+
+  let workspacePath: string | null | undefined;
+  let runtime: ReturnType<typeof parseRuntimeValue>;
+  let runSettings: ReturnType<typeof parseRunSettingsBody>;
+  let taskMode: TaskMode;
+  try {
+    workspacePath = parseWorkspacePath(req.body);
+    runtime = parseRuntimeValue(req.body.runtime);
+    runSettings = parseRunSettingsBody(req.body);
+    taskMode = parseTaskMode(req.body.taskMode ?? req.body.task_mode);
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid task settings' });
   }
 
   const resolvedTitle = title && typeof title === 'string' && title.trim()
@@ -43,9 +74,33 @@ tasksRouter.post('/', (req, res) => {
   const task = insertTask({
     title: resolvedTitle,
     description,
-    status: 'in_progress',
+    status: 'pending',
+    task_mode: taskMode,
+    workspace_path: workspacePath ?? null,
+    agent_runtime: runtime ?? runSettings.taskFields.agent_runtime ?? defaultRuntime(),
+    agent_model: runSettings.taskFields.agent_model ?? null,
+    reasoning_effort: runSettings.taskFields.reasoning_effort ?? null,
   });
   broadcast({ type: 'task_created', task });
+
+  if (task.task_mode === 'plan') {
+    try {
+      startTaskRun(
+        task,
+        buildTaskPlanningRequest({ title: task.title, description: task.description }),
+        {
+          systemMessage: buildTaskPlanningSystemPrompt({
+            title: task.title,
+            description: task.description,
+            workspacePath: task.workspace_path,
+          }),
+        },
+      );
+    } catch {
+      // Keep the task in Pending even if the planning run cannot start immediately.
+    }
+  }
+
   res.status(201).json({ task });
 });
 
@@ -54,6 +109,15 @@ tasksRouter.patch('/:id', (req, res) => {
   const fields: Record<string, unknown> = {};
   for (const key of allowed) {
     if (req.body[key] !== undefined) fields[key] = req.body[key];
+  }
+
+  try {
+    const workspacePath = parseWorkspacePath(req.body);
+    if (workspacePath !== undefined) fields.workspace_path = workspacePath;
+    const runtime = parseRuntimeValue(req.body.runtime);
+    if (runtime !== undefined) fields.agent_runtime = runtime;
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid task settings' });
   }
 
   if (fields.status && !TASK_STATUSES.includes(fields.status as TaskStatus)) {
@@ -86,8 +150,27 @@ tasksRouter.post('/:id/move', (req, res) => {
     return res.status(400).json({ error: `status must be one of: ${TASK_STATUSES.join(', ')}` });
   }
 
+  const current = getTask(req.params.id);
+  if (!current) return res.status(404).json({ error: 'Task not found' });
+
   const updated = updateTask(req.params.id, { status });
   if (!updated) return res.status(404).json({ error: 'Task not found' });
   broadcast({ type: 'task_updated', task: updated });
+
+  if (current.status === 'pending' && status === 'in_progress') {
+    try {
+      const activationPrompt = updated.task_mode === 'plan' && updated.last_agent_response_at !== null
+        ? buildTaskExecutionRequest({ title: updated.title, description: updated.description })
+        : (updated.description ?? updated.title);
+      startTaskRun(updated, activationPrompt);
+    } catch (error) {
+      const reverted = updateTask(req.params.id, { status: current.status });
+      if (reverted) broadcast({ type: 'task_updated', task: reverted });
+      return res.status(409).json({
+        error: toErrorMessage(error, 'Task was moved but could not be activated'),
+      });
+    }
+  }
+
   res.json({ task: updated });
 });

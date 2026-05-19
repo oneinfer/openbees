@@ -9,6 +9,8 @@ import type {
 } from '../../shared/types.js';
 import type { AgentRunSettings } from './types.js';
 
+type LegacyHermesModelsResponse = Omit<AgentModelsResponse, 'runtime'>;
+
 export type WorkerRequest =
   | { id: string; type: 'health' }
   | { id: string; type: 'settings.get' }
@@ -34,6 +36,7 @@ export type WorkerRequest =
       settings: AgentRunSettings;
       taskId?: string;
       taskTitle?: string | null;
+      workspacePath?: string | null;
     }
   | {
       id: string;
@@ -52,7 +55,7 @@ export interface WorkerErrorPayload {
 export type WorkerResult =
   | { ok: boolean; agentDir?: string | null; python?: string | null }
   | AgentDefaults
-  | AgentModelsResponse
+  | LegacyHermesModelsResponse
   | { jobs: CronJob[] }
   | { job: CronJob | null }
   | { runs: CronRun[] }

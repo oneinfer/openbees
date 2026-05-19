@@ -1,4 +1,4 @@
-import { REASONING_EFFORTS, type AgentDefaults, type ReasoningEffort } from '@shared/types';
+import { AGENT_RUNTIMES, REASONING_EFFORTS, type AgentDefaults, type AgentRuntime, type ReasoningEffort } from '@shared/types';
 
 const AGENT_DEFAULTS_CACHE_KEY = 'minions.agentDefaults.v1';
 
@@ -13,10 +13,18 @@ function isReasoningEffort(value: unknown): value is ReasoningEffort | null {
   );
 }
 
+function isRuntime(value: unknown): value is AgentRuntime | null {
+  return value === null || (
+    typeof value === 'string' &&
+    (AGENT_RUNTIMES as readonly string[]).includes(value)
+  );
+}
+
 function isAgentDefaults(value: unknown): value is AgentDefaults {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
   return (
+    isRuntime(record.runtime) &&
     isNullableString(record.provider) &&
     isNullableString(record.model) &&
     isNullableString(record.baseUrl) &&

@@ -36,6 +36,7 @@ const FINISHED_REFETCH_DELAY_MS = 700;
 function compactSettings(settings?: AgentRunSettings): AgentRunSettings | undefined {
   if (!settings) return undefined;
   const compacted: AgentRunSettings = {};
+  if (settings.runtime != null) compacted.runtime = settings.runtime;
   if (settings.model != null) compacted.model = settings.model;
   if (settings.reasoningEffort != null) compacted.reasoningEffort = settings.reasoningEffort;
   return Object.keys(compacted).length > 0 ? compacted : undefined;

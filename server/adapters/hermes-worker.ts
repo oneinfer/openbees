@@ -471,6 +471,7 @@ export class HermesWorkerAdapter implements AgentAdapter {
       settings: options?.settings ?? {},
       taskId: options?.task?.id,
       taskTitle: options?.task?.title ?? null,
+      workspacePath: options?.task?.workspacePath ?? null,
     })) {
       switch (event.type) {
         case 'text_delta':
@@ -538,7 +539,11 @@ export class HermesWorkerAdapter implements AgentAdapter {
   }
 
   async getModels(): Promise<AgentModelsResponse> {
-    return await this.client.request<AgentModelsResponse>('models.list');
+    const models = await this.client.request<Omit<AgentModelsResponse, 'runtime'>>('models.list');
+    return {
+      runtime: 'hermes',
+      ...models,
+    };
   }
 
   async listCronJobs(includeDisabled = false): Promise<CronJob[]> {

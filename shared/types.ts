@@ -1,12 +1,21 @@
-export const TASK_STATUSES = ['in_progress', 'in_review', 'done'] as const;
+export const TASK_STATUSES = ['pending', 'in_progress', 'in_review', 'done'] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+export const TASK_MODES = ['direct', 'plan'] as const;
+export type TaskMode = (typeof TASK_MODES)[number];
 
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
+export const AGENT_RUNTIMES = ['hermes', 'codex', 'claude_code', 'opencode'] as const;
+export type AgentRuntime = (typeof AGENT_RUNTIMES)[number];
+export type AgentRuntimeModelControl = 'none' | 'picker' | 'text';
+export type AgentRuntimeReasoningControl = 'none' | 'picker';
+
 export interface AgentRunSettings {
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
+  runtime?: AgentRuntime | null;
 }
 
 export interface Task {
@@ -14,6 +23,9 @@ export interface Task {
   title: string;
   description: string | null;
   status: TaskStatus;
+  task_mode: TaskMode;
+  workspace_path: string | null;
+  agent_runtime: AgentRuntime | null;
   agent_model: string | null;
   reasoning_effort: ReasoningEffort | null;
   created_at: number;
@@ -89,12 +101,28 @@ export interface SessionMetadata {
 }
 
 export interface AgentDefaults {
+  runtime: AgentRuntime | null;
   provider: string | null;
   model: string | null;
   baseUrl: string | null;
   apiMode: string | null;
   reasoningEffort: ReasoningEffort | null;
   showReasoning: boolean;
+}
+
+export interface AgentRuntimeOption {
+  id: AgentRuntime;
+  label: string;
+  description: string;
+  status: 'ready' | 'configure';
+  command: string | null;
+  modelControl: AgentRuntimeModelControl;
+  reasoningControl: AgentRuntimeReasoningControl;
+}
+
+export interface AgentRuntimesResponse {
+  defaultRuntime: AgentRuntime;
+  options: AgentRuntimeOption[];
 }
 
 export interface AgentModelOption {
@@ -110,6 +138,7 @@ export interface AgentModelGroup {
 }
 
 export interface AgentModelsResponse {
+  runtime: AgentRuntime;
   defaultModel: string | null;
   activeProvider: string | null;
   groups: AgentModelGroup[];
@@ -117,11 +146,14 @@ export interface AgentModelsResponse {
 
 export interface TaskAgentSettings {
   task: {
+    runtime: AgentRuntime | null;
     model: string | null;
     reasoningEffort: ReasoningEffort | null;
   };
   defaults: AgentDefaults;
+  runtimes: AgentRuntimesResponse;
   effective: {
+    runtime: AgentRuntime;
     model: string | null;
     provider: string | null;
     reasoningEffort: ReasoningEffort | null;

@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import { MoreHorizontal, Trash2, Loader2, Pencil } from 'lucide-react';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { StatusIcon } from './StatusIcon';
@@ -12,8 +12,16 @@ import { isEditableTarget } from '../lib/keyboard';
 import { TaskChat } from './TaskChat';
 import type { AgentRunSettings } from '../lib/api';
 import type { TaskStatus } from '@shared/types';
+import { getProjectLabel, projectHref } from '../lib/projects';
 
 const DETAIL_COLUMN_CLASS = 'max-w-[808px] w-full mx-auto';
+
+function formatRuntimeLabel(runtime: string | null): string {
+  if (!runtime) return 'Default runtime';
+  return runtime
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
 
 export function TaskDetailPage() {
   const { taskId } = useParams<{ taskId: string }>();
@@ -183,6 +191,48 @@ export function TaskDetailPage() {
                 <Pencil size={15} />
               </button>
             </div>
+            {task.workspace_path && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                {task.task_mode === 'plan' && (
+                  <span className="rounded-md bg-amber-100 px-2 py-1 font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                    Plan mode
+                  </span>
+                )}
+                <span className="rounded-md bg-zinc-100 px-2 py-1 font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  {formatRuntimeLabel(task.agent_runtime)}
+                </span>
+                <span className="rounded-md bg-zinc-100 px-2 py-1 font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  Working repo
+                </span>
+                <Link
+                  to={projectHref(task.workspace_path)}
+                  className="rounded-md bg-zinc-100 px-2 py-1 font-medium text-zinc-600 transition-colors hover:bg-zinc-200 hover:text-zinc-800 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
+                >
+                  {getProjectLabel(task.workspace_path)}
+                </Link>
+                <span className="max-w-full truncate font-mono text-zinc-500 dark:text-zinc-400">
+                  {task.workspace_path}
+                </span>
+                <Link
+                  to={`/files?path=${encodeURIComponent(task.workspace_path)}`}
+                  className="rounded-md border border-zinc-200 px-2 py-1 text-zinc-600 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  Open in Files
+                </Link>
+              </div>
+            )}
+            {!task.workspace_path && task.agent_runtime && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                {task.task_mode === 'plan' && (
+                  <span className="rounded-md bg-amber-100 px-2 py-1 font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                    Plan mode
+                  </span>
+                )}
+                <span className="rounded-md bg-zinc-100 px-2 py-1 font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  {formatRuntimeLabel(task.agent_runtime)}
+                </span>
+              </div>
+            )}
           </div>
 
           <div className="flex shrink-0 items-center gap-2.5 sm:pt-1.5">
@@ -233,7 +283,12 @@ export function TaskDetailPage() {
       </div>
 
       <div className="w-full flex-1 flex flex-col min-h-0">
-        <TaskChat taskId={task.id} initialMessage={initialMessage} initialSettings={initialSettings} />
+        <TaskChat
+          taskId={task.id}
+          taskStatus={task.status}
+          initialMessage={initialMessage}
+          initialSettings={initialSettings}
+        />
       </div>
 
       {showDeleteConfirm && (

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
   ChevronUp,
@@ -43,10 +44,12 @@ type DeleteDialog = {
 };
 
 export function FileBrowserPage() {
+  const [searchParams] = useSearchParams();
+  const initialPath = searchParams.get('path') || DEFAULT_FILE_BROWSER_PATH;
   const fileUploadInputRef = useRef<HTMLInputElement>(null);
   const folderUploadInputRef = useRef<HTMLInputElement>(null);
   const [directory, setDirectory] = useState<FileListResponse | null>(null);
-  const [pathInput, setPathInput] = useState(DEFAULT_FILE_BROWSER_PATH);
+  const [pathInput, setPathInput] = useState(initialPath);
   const [selectedEntry, setSelectedEntry] = useState<FileEntry | null>(null);
   const [openFile, setOpenFile] = useState<FileReadResponse | null>(null);
   const [content, setContent] = useState('');
@@ -119,8 +122,9 @@ export function FileBrowserPage() {
   }, [applyOpenFile]);
 
   useEffect(() => {
-    loadDirectory(DEFAULT_FILE_BROWSER_PATH).catch(() => undefined);
-  }, [loadDirectory]);
+    setPathInput(initialPath);
+    loadDirectory(initialPath).catch(() => undefined);
+  }, [initialPath, loadDirectory]);
 
   useEffect(() => {
     folderUploadInputRef.current?.setAttribute('webkitdirectory', '');
