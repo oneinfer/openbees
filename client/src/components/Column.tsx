@@ -1,5 +1,5 @@
 import { useDroppable } from '@dnd-kit/core';
-import { MoreHorizontal, Plus } from 'lucide-react';
+import { Loader2, MoreHorizontal, Play, Plus } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Task, TaskStatus } from '@shared/types';
@@ -14,14 +14,25 @@ interface ColumnProps {
   streamingTaskIds: Set<string>;
   isLast?: boolean;
   onRequestDeleteAll: (status: TaskStatus) => void;
+  onFlushPending: () => void;
+  isFlushingPending: boolean;
 }
 
-export function Column({ status, tasks, streamingTaskIds, isLast = false, onRequestDeleteAll }: ColumnProps) {
+export function Column({
+  status,
+  tasks,
+  streamingTaskIds,
+  isLast = false,
+  onRequestDeleteAll,
+  onFlushPending,
+  isFlushingPending,
+}: ColumnProps) {
   const { label } = STATUS_META[status];
   const { setNodeRef, isOver } = useDroppable({ id: status });
   const navigate = useNavigate();
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const showAddButton = status === 'pending';
+  const showFlushButton = status === 'pending';
 
   const openMenu = useCallback((button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect();
@@ -39,6 +50,24 @@ export function Column({ status, tasks, streamingTaskIds, isLast = false, onRequ
         <h2 className="text-xs font-medium tracking-wider text-zinc-500 dark:text-zinc-400 uppercase">{label}</h2>
         <span className="text-xs text-zinc-400 dark:text-zinc-500">{tasks.length}</span>
         <div className="ml-auto -mr-0.5 flex items-center gap-0.5">
+          {showFlushButton && (
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={onFlushPending}
+              disabled={tasks.length === 0 || isFlushingPending}
+              aria-label="Flush pending tasks"
+              title="Flush pending tasks"
+              className="h-6 min-w-[64px] inline-flex items-center justify-center gap-1 rounded-md px-2 text-[11px] font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-zinc-500 dark:disabled:hover:text-zinc-400"
+            >
+              {isFlushingPending ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Play size={13} fill="currentColor" strokeWidth={2.5} />
+              )}
+              Flush
+            </button>
+          )}
           <button
             type="button"
             onMouseDown={(e) => e.stopPropagation()}

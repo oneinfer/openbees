@@ -13,11 +13,13 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  MessageSquare,
 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { isEditableTarget } from '../lib/keyboard';
 import { groupTasksByProject, normalizeProjectPath, projectHref } from '../lib/projects';
 import { timeAgo } from '../lib/format';
+import { isChatTask } from '../lib/taskState';
 
 const isMac = /Mac/.test(navigator.userAgent);
 const PROJECT_EXPANSION_STORAGE_KEY = 'sidebarExpandedProjects';
@@ -42,6 +44,10 @@ export function Sidebar() {
   const tasks = useStore((s) => s.tasks);
   const streamingTaskIds = useStore((s) => s.streamingTaskIds);
   const projectGroups = useMemo(() => groupTasksByProject(tasks, streamingTaskIds, projects), [projects, tasks, streamingTaskIds]);
+  const recentChats = useMemo(
+    () => tasks.filter(isChatTask).sort((a, b) => b.updated_at - a.updated_at).slice(0, 6),
+    [tasks],
+  );
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set(readExpandedProjects()));
 
   const activeTask = useMemo(() => {
@@ -76,7 +82,7 @@ export function Sidebar() {
       if (chordKey === 'g') {
         chordKey = null;
         if (chordTimeout) clearTimeout(chordTimeout);
-        const routes: Record<string, string> = { t: '/', p: '/projects', f: '/files' };
+        const routes: Record<string, string> = { t: '/', c: '/chats', p: '/projects', f: '/files' };
         if (routes[key]) {
           e.preventDefault();
           navigate(routes[key]);
@@ -113,6 +119,7 @@ export function Sidebar() {
 
   const isActive = (path: string) => {
     if (path === '/') return location.pathname === '/' || (location.pathname.startsWith('/tasks/') && location.pathname !== '/tasks/new');
+    if (path === '/chats') return location.pathname === '/chats' || location.pathname.startsWith('/chats/');
     if (path === '/projects') return location.pathname === '/projects';
     return location.pathname === path;
   };
@@ -169,6 +176,14 @@ export function Sidebar() {
             shortcut={isMac ? 'Shift+Cmd+O' : 'Ctrl+Shift+O'}
           />
           <SidebarLink
+            icon={<MessageSquare size={18} />}
+            label="New Chat"
+            to="/chats"
+            active={isActive('/chats')}
+            collapsed={collapsed}
+            shortcut={['G', 'C']}
+          />
+          <SidebarLink
             icon={<Columns3 size={18} />}
             label="Tasks"
             to="/"
@@ -216,7 +231,55 @@ export function Sidebar() {
         </nav>
 
         {!collapsed && (
-          <div className="mt-5 px-3">
+          <div className="mt-5 px-3 space-y-5">
+            {recentChats.length > 0 && (
+              <div>
+                <div className="mb-2 flex items-center justify-between px-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-400 dark:text-zinc-500">
+                    Recent Chats
+                  </span>
+                  <span className="rounded-full bg-zinc-200/70 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                    {recentChats.length}
+                  </span>
+                </div>
+                <div className="overflow-hidden rounded-2xl border border-zinc-200/80 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+                  {recentChats.map((chat, index) => {
+                    const isChatActive = location.pathname === `/chats/${chat.id}`;
+                    const isStreaming = streamingTaskIds.has(chat.id);
+
+                    return (
+                      <Link
+                        key={chat.id}
+                        to={`/chats/${chat.id}`}
+                        className={`block px-3 py-2.5 transition-colors ${
+                          index !== 0 ? 'border-t border-zinc-100 dark:border-zinc-900' : ''
+                        } ${
+                          isChatActive
+                            ? 'bg-zinc-100 text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100'
+                            : 'hover:bg-zinc-50 dark:hover:bg-zinc-900/70'
+                        }`}
+                      >
+                        <div className="flex items-start gap-2">
+                          {isStreaming ? (
+                            <Loader2 size={13} className="mt-0.5 shrink-0 animate-spin text-zinc-400" />
+                          ) : (
+                            <MessageSquare size={13} className="mt-0.5 shrink-0 text-zinc-400" />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-medium">{chat.title}</div>
+                            <div className="mt-1 text-[11px] text-zinc-400 dark:text-zinc-500">
+                              {isStreaming ? 'Working...' : timeAgo(chat.updated_at)}
+                            </div>
+                          </div>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div>
             <div className="mb-2 flex items-center justify-between px-2">
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-400 dark:text-zinc-500">
                 Projects
@@ -320,6 +383,7 @@ export function Sidebar() {
                 })}
               </div>
             )}
+            </div>
           </div>
         )}
       </div>

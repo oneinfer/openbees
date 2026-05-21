@@ -11,8 +11,15 @@ import {
 import { defaultRuntime, parseRuntimeValue } from '../runtime-config.js';
 import { startTaskRun } from '../task-runner.js';
 import { parseWorkspacePath } from '../workspace-access.js';
-import { TASK_MODES, TASK_STATUSES } from '../../shared/types.js';
-import type { TaskMode, TaskStatus } from '../../shared/types.js';
+import { TASK_KINDS, TASK_MODES, TASK_STATUSES } from '../../shared/types.js';
+import type { TaskKind, TaskMode, TaskStatus } from '../../shared/types.js';
+import {
+  appendAttachmentContext,
+  attachmentUploadMiddleware,
+  cleanupUploadedAttachments,
+  saveTaskAttachments,
+  uploadedAttachments,
+} from '../attachments.js';
 
 export const tasksRouter = Router();
 
@@ -49,7 +56,15 @@ function parseTaskMode(value: unknown): TaskMode {
   return value as TaskMode;
 }
 
-tasksRouter.post('/', (req, res) => {
+function parseTaskKind(value: unknown): TaskKind {
+  if (value === undefined || value === null || value === '') return 'task';
+  if (typeof value !== 'string' || !(TASK_KINDS as readonly string[]).includes(value)) {
+    throw new Error(`taskKind must be one of: ${TASK_KINDS.join(', ')}`);
+  }
+  return value as TaskKind;
+}
+
+tasksRouter.post('/', attachmentUploadMiddleware, async (req, res) => {
   const { description, title } = req.body;
   if (!description || typeof description !== 'string') {
     return res.status(400).json({ error: 'description is required' });
@@ -59,11 +74,13 @@ tasksRouter.post('/', (req, res) => {
   let runtime: ReturnType<typeof parseRuntimeValue>;
   let runSettings: ReturnType<typeof parseRunSettingsBody>;
   let taskMode: TaskMode;
+  let taskKind: TaskKind;
   try {
     workspacePath = parseWorkspacePath(req.body);
     runtime = parseRuntimeValue(req.body.runtime);
     runSettings = parseRunSettingsBody(req.body);
     taskMode = parseTaskMode(req.body.taskMode ?? req.body.task_mode);
+    taskKind = parseTaskKind(req.body.taskKind ?? req.body.task_kind);
   } catch (error) {
     return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid task settings' });
   }
@@ -71,16 +88,33 @@ tasksRouter.post('/', (req, res) => {
   const resolvedTitle = title && typeof title === 'string' && title.trim()
     ? title.trim()
     : generateTitle(description);
-  const task = insertTask({
+  let task = insertTask({
     title: resolvedTitle,
     description,
     status: 'pending',
+    task_kind: taskKind,
     task_mode: taskMode,
     workspace_path: workspacePath ?? null,
     agent_runtime: runtime ?? runSettings.taskFields.agent_runtime ?? defaultRuntime(),
     agent_model: runSettings.taskFields.agent_model ?? null,
     reasoning_effort: runSettings.taskFields.reasoning_effort ?? null,
   });
+
+  const files = uploadedAttachments(req);
+  try {
+    const attachments = await saveTaskAttachments(task.id, files);
+    if (attachments.length > 0) {
+      task = updateTask(task.id, {
+        description: appendAttachmentContext(description, attachments),
+      }) ?? task;
+    }
+  } catch (error) {
+    deleteTask(task.id);
+    return res.status(400).json({ error: toErrorMessage(error, 'Failed to save attachments') });
+  } finally {
+    await cleanupUploadedAttachments(files);
+  }
+
   broadcast({ type: 'task_created', task });
 
   if (task.task_mode === 'plan') {

@@ -2,6 +2,12 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowUp, FolderOpen, GitBranch, Loader2, X } from 'lucide-react';
 import { InputToolbar } from './InputToolbar';
+import {
+  AttachmentPicker,
+  AttachmentPreviewList,
+  composerAttachmentsFromClipboard,
+  type ComposerAttachment,
+} from './AttachmentPicker';
 import { createTask, pickWorkspaceDirectory } from '../lib/api';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { isEditableTarget, handleChatKeyDown } from '../lib/keyboard';
@@ -13,6 +19,7 @@ export function NewTaskPage() {
   const [searchParams] = useSearchParams();
   const requestedWorkspacePath = searchParams.get('workspacePath')?.trim() ?? '';
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [workspacePath, setWorkspacePath] = useState(() => {
     if (requestedWorkspacePath) return requestedWorkspacePath;
     return localStorage.getItem('minions:lastWorkspacePath') ?? '';
@@ -57,6 +64,7 @@ export function NewTaskPage() {
         model,
         reasoningEffort,
         planModeEnabled ? 'plan' : 'direct',
+        attachments.map((attachment) => attachment.file),
       );
       if (normalizedWorkspacePath) localStorage.setItem('minions:lastWorkspacePath', normalizedWorkspacePath);
       else localStorage.removeItem('minions:lastWorkspacePath');
@@ -65,7 +73,7 @@ export function NewTaskPage() {
       setWorkspaceError(toErrorMessage(error, 'Failed to create task'));
       setIsCreating(false);
     }
-  }, [defaults, input, isCreating, isLoading, model, navigate, normalizedWorkspacePath, planModeEnabled, reasoningEffort, runtime]);
+  }, [attachments, defaults, input, isCreating, isLoading, model, navigate, normalizedWorkspacePath, planModeEnabled, reasoningEffort, runtime]);
 
   const handleChooseWorkspace = useCallback(async () => {
     if (isPickingWorkspace || isCreating) return;
@@ -86,6 +94,16 @@ export function NewTaskPage() {
     (e: React.KeyboardEvent) => handleChatKeyDown(e, handleSubmit),
     [handleSubmit],
   );
+
+  const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (isCreating) return;
+
+    const pastedAttachments = composerAttachmentsFromClipboard(event);
+    if (pastedAttachments.length === 0) return;
+
+    if (!event.clipboardData.getData('text/plain')) event.preventDefault();
+    setAttachments((current) => [...current, ...pastedAttachments]);
+  }, [isCreating]);
 
   return (
     <div className="flex-1 flex flex-col items-center justify-end px-6 pb-16">
@@ -122,17 +140,28 @@ export function NewTaskPage() {
               </div>
             </div>
           )}
+          <AttachmentPreviewList
+            attachments={attachments}
+            disabled={isCreating}
+            onChange={setAttachments}
+          />
           <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder="Describe your task in detail..."
             rows={4}
             className="w-full resize-none bg-transparent px-5 pt-4 pb-2 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none leading-relaxed"
           />
           <div className="flex items-center justify-between gap-3 px-4 pb-3">
             <div className="flex min-w-0 items-center gap-2 flex-wrap">
+              <AttachmentPicker
+                attachments={attachments}
+                disabled={isCreating}
+                onChange={setAttachments}
+              />
               <button
                 type="button"
                 onClick={() => setPlanModeEnabled((current) => !current)}

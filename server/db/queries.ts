@@ -3,6 +3,7 @@ import db from './index.js';
 import {
   type Task,
   type TaskStatus,
+  type TaskKind,
   type TaskMode,
   type ReasoningEffort,
   type ContextUsage,
@@ -27,12 +28,12 @@ const stmtGetTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
 const stmtTaskIdsByWorkspacePath = db.prepare('SELECT id FROM tasks WHERE workspace_path = ?');
 const stmtInsertTask = db.prepare(`
   INSERT INTO tasks (
-    id, title, description, status, task_mode, workspace_path, agent_runtime, agent_model, reasoning_effort,
+    id, title, description, status, task_kind, task_mode, workspace_path, agent_runtime, agent_model, reasoning_effort,
     created_at, updated_at, last_agent_response_at, last_viewed_at,
     last_context_used_tokens, last_context_window_tokens
   )
   VALUES (
-    @id, @title, @description, @status, @task_mode, @workspace_path, @agent_runtime, @agent_model, @reasoning_effort,
+    @id, @title, @description, @status, @task_kind, @task_mode, @workspace_path, @agent_runtime, @agent_model, @reasoning_effort,
     @created_at, @updated_at, @last_agent_response_at, @last_viewed_at,
     @last_context_used_tokens, @last_context_window_tokens
   )
@@ -101,6 +102,7 @@ export function insertTask(task: {
   title: string;
   description?: string | null;
   status: TaskStatus;
+  task_kind?: TaskKind | null;
   task_mode?: TaskMode | null;
   workspace_path?: string | null;
   agent_runtime?: AgentRuntime | null;
@@ -115,6 +117,7 @@ export function insertTask(task: {
     title: task.title,
     description: task.description ?? null,
     status: task.status,
+    task_kind: task.task_kind ?? 'task',
     task_mode: task.task_mode ?? 'direct',
     workspace_path: task.workspace_path ?? null,
     agent_runtime: task.agent_runtime ?? null,

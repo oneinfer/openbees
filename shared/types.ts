@@ -4,6 +4,9 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const TASK_MODES = ['direct', 'plan'] as const;
 export type TaskMode = (typeof TASK_MODES)[number];
 
+export const TASK_KINDS = ['task', 'chat'] as const;
+export type TaskKind = (typeof TASK_KINDS)[number];
+
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
@@ -23,6 +26,7 @@ export interface Task {
   title: string;
   description: string | null;
   status: TaskStatus;
+  task_kind: TaskKind;
   task_mode: TaskMode;
   workspace_path: string | null;
   agent_runtime: AgentRuntime | null;
@@ -57,6 +61,7 @@ export interface ToolProgressEvent {
   status: 'running' | 'completed' | 'error';
   duration?: number;
   label?: string;
+  details?: unknown;
 }
 
 export type LiveChatRunStatus = 'streaming' | 'done' | 'error';
@@ -95,6 +100,15 @@ export interface LiveChatRun {
 export interface ContextUsage {
   used_tokens: number;
   window_tokens: number;
+}
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  path: string;
+  mimeType: string;
+  size: number;
+  kind: 'image' | 'file';
 }
 
 export interface SessionMetadata {

@@ -1,6 +1,13 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { ArrowUp, Loader2, ChevronDown, ChevronRight, Check, Terminal, FileText, FilePenLine, Globe, Code, Wrench } from 'lucide-react';
 import { InputToolbar, ContextRing } from './InputToolbar';
+import {
+  AttachmentPicker,
+  AttachmentPreviewList,
+  composerAttachmentsFromClipboard,
+  type ComposerAttachment,
+} from './AttachmentPicker';
+import { ArtifactViewer, ChatArtifacts, collectChatArtifacts, type ChatArtifact } from './ChatArtifacts';
 import { MarkdownContent } from './MarkdownContent';
 import { useChat, ToolProgressEvent } from '../hooks/useChat';
 import { useAgentConfig } from '../hooks/useAgentConfig';
@@ -13,6 +20,9 @@ interface TaskChatProps {
   taskStatus: TaskStatus;
   initialMessage?: string;
   initialSettings?: AgentRunSettings;
+  emptyMessage?: string;
+  inputPlaceholder?: string;
+  workspacePath?: string | null;
 }
 
 function ThinkingBlock({ content, isLive }: { content: string; isLive: boolean }) {
@@ -58,6 +68,7 @@ const TOOL_ICONS: Record<string, typeof Terminal> = {
 };
 
 const CHAT_COLUMN_CLASS = 'w-full max-w-[760px] mx-auto';
+const ATTACHMENT_CONTEXT_PATTERN = /\n*\s*The user attached the following file(?:s)?\.[\s\S]*?<attachments>[\s\S]*?<\/attachments>\s*$/;
 
 function getToolIcon(name: string) {
   return TOOL_ICONS[name] ?? Wrench;
@@ -65,6 +76,10 @@ function getToolIcon(name: string) {
 
 function formatToolName(name: string): string {
   return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function displayMessageContent(content: string): string {
+  return content.replace(ATTACHMENT_CONTEXT_PATTERN, '').trimEnd();
 }
 
 function ToolCallBlock({ tool }: { tool: ToolProgressEvent }) {
@@ -99,9 +114,19 @@ function ToolCallBlock({ tool }: { tool: ToolProgressEvent }) {
   );
 }
 
-export function TaskChat({ taskId, taskStatus, initialMessage, initialSettings }: TaskChatProps) {
+export function TaskChat({
+  taskId,
+  taskStatus,
+  initialMessage,
+  initialSettings,
+  emptyMessage = 'Start a conversation with your assistant.',
+  inputPlaceholder = 'Message your assistant...',
+  workspacePath,
+}: TaskChatProps) {
   const { messages, isStreaming, thinkingContent, activeTools, context, sendMessage, loadMessages } = useChat();
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [selectedArtifact, setSelectedArtifact] = useState<ChatArtifact | null>(null);
   const [loadedTaskId, setLoadedTaskId] = useState<string | null>(null);
   const startupRef = useRef({ taskId, initialMessage, initialSettings });
   if (startupRef.current.taskId !== taskId) {
@@ -123,6 +148,7 @@ export function TaskChat({ taskId, taskStatus, initialMessage, initialSettings }
   useEffect(() => {
     let cancelled = false;
     setLoadedTaskId(null);
+    setSelectedArtifact(null);
     didInitialScrollRef.current = false;
     loadMessages(taskId)
       .then((loadedMessages) => {
@@ -154,17 +180,35 @@ export function TaskChat({ taskId, taskStatus, initialMessage, initialSettings }
   const handleSubmit = useCallback(async () => {
     const text = input.trim();
     if (!text || inputDisabled) return;
+    const files = attachments.map((attachment) => attachment.file);
     setInput('');
-    await sendMessage(taskId, text, { runtime, model, reasoningEffort });
-  }, [input, inputDisabled, taskId, sendMessage, runtime, model, reasoningEffort]);
+    setAttachments([]);
+    for (const attachment of attachments) {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+    }
+    await sendMessage(taskId, text, { runtime, model, reasoningEffort }, files);
+  }, [attachments, input, inputDisabled, taskId, sendMessage, runtime, model, reasoningEffort]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => handleChatKeyDown(e, handleSubmit),
     [handleSubmit],
   );
 
+  const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (inputDisabled) return;
+
+    const pastedAttachments = composerAttachmentsFromClipboard(event);
+    if (pastedAttachments.length === 0) return;
+
+    if (!event.clipboardData.getData('text/plain')) event.preventDefault();
+    setAttachments((current) => [...current, ...pastedAttachments]);
+  }, [inputDisabled]);
+
   return (
-    <div className="flex w-full flex-col flex-1 min-h-0">
+    <div className="flex w-full flex-1 min-h-0">
+      <div className={`flex min-w-0 flex-col transition-[width,flex-basis] duration-200 ${
+        selectedArtifact ? 'basis-full xl:basis-[50%] 2xl:basis-[54%]' : 'basis-full'
+      }`}>
       <div className="relative flex-1 min-h-0">
         <div
           ref={messagesContainerRef}
@@ -175,15 +219,16 @@ export function TaskChat({ taskId, taskStatus, initialMessage, initialSettings }
               <p className="text-sm text-zinc-400 dark:text-zinc-500 text-center py-12">
                 {isPendingTask
                   ? 'Move this task to In Progress to activate the assistant.'
-                  : 'Start a conversation with your assistant.'}
+                  : emptyMessage}
               </p>
             )}
             {messages.map((msg, idx) => {
               if (msg.role === 'user') {
+                const userContent = displayMessageContent(msg.content);
                 return (
                   <div key={msg.id} className="flex justify-end">
                     <div className="max-w-[85%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap leading-relaxed bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100">
-                      {msg.content}
+                      {userContent}
                     </div>
                   </div>
                 );
@@ -193,6 +238,7 @@ export function TaskChat({ taskId, taskStatus, initialMessage, initialSettings }
               const thinkingToShow = isLastAssistant && isStreaming ? thinkingContent : (msg.thinking || '');
               const isLiveThinking = isLastAssistant && isStreaming && !!thinkingContent;
               const toolsToShow = isLastAssistant && isStreaming ? activeTools : (msg.tools ?? []);
+              const artifacts = collectChatArtifacts(msg.content, toolsToShow);
               const showSpinner = isLastAssistant && isStreaming && !msg.content && !thinkingContent && !activeTools.some(t => t.status === 'running');
 
               return (
@@ -208,6 +254,7 @@ export function TaskChat({ taskId, taskStatus, initialMessage, initialSettings }
                         ))}
                       </div>
                     )}
+                    <ChatArtifacts artifacts={artifacts} onOpenArtifact={setSelectedArtifact} />
                     <div className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
                       {msg.content ? (
                         <MarkdownContent content={msg.content} isStreaming={isLastAssistant && isStreaming} />
@@ -238,30 +285,43 @@ export function TaskChat({ taskId, taskStatus, initialMessage, initialSettings }
 
       <div className="px-4 sm:px-6 py-4 border-t border-zinc-100 dark:border-zinc-800">
         <div className={`${CHAT_COLUMN_CLASS} rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800`}>
+          <AttachmentPreviewList
+            attachments={attachments}
+            disabled={inputDisabled}
+            onChange={setAttachments}
+          />
           <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isPendingTask ? 'Move this task to In Progress to activate it...' : 'Message your assistant...'}
+            onPaste={handlePaste}
+            placeholder={isPendingTask ? 'Move this task to In Progress to activate it...' : inputPlaceholder}
             rows={2}
             disabled={isPendingTask}
             className="w-full resize-none bg-transparent px-5 pt-3 pb-1 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none leading-relaxed"
           />
           <div className="flex items-center justify-between px-4 pb-3">
-            <InputToolbar
-              runtime={runtime}
-              model={model}
-              reasoningEffort={reasoningEffort}
-              defaults={toolbarDefaults}
-              runtimeDefaultModel={runtimeDefaultModel}
-              runtimeOptions={runtimeOptions}
-              modelGroups={modelGroups}
-              disabled={inputDisabled}
-              onRuntimeChange={setRuntime}
-              onModelChange={setModel}
-              onReasoningEffortChange={setReasoningEffort}
-            />
+            <div className="flex min-w-0 items-center gap-2 flex-wrap">
+              <AttachmentPicker
+                attachments={attachments}
+                disabled={inputDisabled}
+                onChange={setAttachments}
+              />
+              <InputToolbar
+                runtime={runtime}
+                model={model}
+                reasoningEffort={reasoningEffort}
+                defaults={toolbarDefaults}
+                runtimeDefaultModel={runtimeDefaultModel}
+                runtimeOptions={runtimeOptions}
+                modelGroups={modelGroups}
+                disabled={inputDisabled}
+                onRuntimeChange={setRuntime}
+                onModelChange={setModel}
+                onReasoningEffortChange={setReasoningEffort}
+              />
+            </div>
             <div className="flex items-center gap-2">
               {context && <ContextRing context={context} />}
               <button
@@ -275,6 +335,16 @@ export function TaskChat({ taskId, taskStatus, initialMessage, initialSettings }
           </div>
         </div>
       </div>
+      </div>
+      {selectedArtifact && (
+        <aside className="hidden min-h-0 min-w-[420px] flex-1 xl:block">
+          <ArtifactViewer
+            artifact={selectedArtifact}
+            workspacePath={workspacePath}
+            onClose={() => setSelectedArtifact(null)}
+          />
+        </aside>
+      )}
     </div>
   );
 }

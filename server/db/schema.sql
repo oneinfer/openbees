@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   title             TEXT NOT NULL,
   description       TEXT,
   status            TEXT NOT NULL DEFAULT 'pending',
+  task_kind         TEXT NOT NULL DEFAULT 'task',
   task_mode         TEXT NOT NULL DEFAULT 'direct',
   workspace_path    TEXT,
   agent_runtime     TEXT,

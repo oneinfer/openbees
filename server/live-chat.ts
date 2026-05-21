@@ -55,6 +55,7 @@ function mergeToolProgress(tools: ToolProgressEvent[], event: StreamEvent): void
     status: event.status ?? 'running',
     duration: event.duration,
     label: event.label,
+    details: event.details,
   };
 
   if (tool.status === 'running') {

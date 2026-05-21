@@ -20,6 +20,7 @@ import type {
   SessionMetadata,
   Task,
   TaskAgentSettings,
+  TaskKind,
   TaskMode,
   TaskMessage,
   TaskStatus,
@@ -131,10 +132,32 @@ export function createTask(
   model?: string | null,
   reasoningEffort?: ReasoningEffort | null,
   taskMode?: TaskMode,
+  attachments?: File[],
+  taskKind?: TaskKind,
 ) {
+  if (attachments?.length) {
+    const formData = new FormData();
+    formData.append('description', description);
+    appendOptionalFormValue(formData, 'title', title);
+    appendOptionalFormValue(formData, 'workspacePath', workspacePath);
+    appendOptionalFormValue(formData, 'runtime', runtime);
+    appendOptionalFormValue(formData, 'model', model);
+    appendOptionalFormValue(formData, 'reasoningEffort', reasoningEffort);
+    appendOptionalFormValue(formData, 'taskMode', taskMode);
+    appendOptionalFormValue(formData, 'taskKind', taskKind);
+    for (const attachment of attachments) {
+      formData.append('attachments', attachment, attachment.name);
+    }
+
+    return request<{ task: Task }>('/tasks', {
+      method: 'POST',
+      body: formData,
+    });
+  }
+
   return request<{ task: Task }>('/tasks', {
     method: 'POST',
-    body: JSON.stringify({ description, title, workspacePath, runtime, model, reasoningEffort, taskMode }),
+    body: JSON.stringify({ description, title, workspacePath, runtime, model, reasoningEffort, taskMode, taskKind }),
   });
 }
 
@@ -158,6 +181,13 @@ export function pickWorkspaceDirectory(initialPath?: string | null) {
   return request<{ path: string | null }>('/system/select-directory', {
     method: 'POST',
     body: JSON.stringify({ initialPath: initialPath ?? null }),
+  });
+}
+
+export function openSystemPath(path: string) {
+  return request<{ ok: boolean }>('/system/open-path', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
   });
 }
 
@@ -292,4 +322,8 @@ export function deleteCronJob(jobId: string) {
 function fileRelativePath(file: File): string {
   const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
   return relativePath && relativePath.length > 0 ? relativePath : file.name;
+}
+
+function appendOptionalFormValue(formData: FormData, key: string, value: string | null | undefined): void {
+  if (value !== undefined && value !== null && value !== '') formData.append(key, value);
 }

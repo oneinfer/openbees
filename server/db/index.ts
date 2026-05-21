@@ -21,6 +21,7 @@ ensureTaskSchema(db);
 
 function ensureTaskSchema(database: import('better-sqlite3').Database): void {
   const expectedColumns = new Map<string, string>([
+    ['task_kind', "TEXT NOT NULL DEFAULT 'task'"],
     ['task_mode', "TEXT NOT NULL DEFAULT 'direct'"],
     ['workspace_path', 'TEXT'],
     ['agent_runtime', 'TEXT'],
