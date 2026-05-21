@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowUp, FolderOpen, Loader2, MessageSquare, X } from 'lucide-react';
+import { ArrowUp, FolderOpen, Loader2, MessageSquare, Trash2, X } from 'lucide-react';
 import {
   AttachmentPicker,
   AttachmentPreviewList,
   composerAttachmentsFromClipboard,
   type ComposerAttachment,
 } from './AttachmentPicker';
+import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { InputToolbar } from './InputToolbar';
 import { TaskChat } from './TaskChat';
-import { createTask, markTaskViewed, moveTask, pickWorkspaceDirectory } from '../lib/api';
+import { createTask, deleteTask, markTaskViewed, moveTask, pickWorkspaceDirectory } from '../lib/api';
 import { handleChatKeyDown } from '../lib/keyboard';
 import { getProjectLabel } from '../lib/projects';
 import { useStore } from '../lib/store';
@@ -253,10 +254,15 @@ function NewChatComposer() {
 }
 
 function ExistingChatPage({ chatId }: { chatId: string }) {
+  const navigate = useNavigate();
   const task = useStore((s) => s.tasks.find((t) => t.id === chatId) ?? null);
   const tasksLoaded = useStore((s) => s.tasksLoaded);
   const upsertTask = useStore((s) => s.upsertTask);
+  const removeTask = useStore((s) => s.removeTask);
   const markViewedInFlightRef = useRef<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!task || task.last_agent_response_at === null) return;
@@ -273,6 +279,21 @@ function ExistingChatPage({ chatId }: { chatId: string }) {
         if (markViewedInFlightRef.current === key) markViewedInFlightRef.current = null;
       });
   }, [task?.id, task?.last_agent_response_at, task?.last_viewed_at, upsertTask]);
+
+  const handleDelete = useCallback(async () => {
+    if (!task || isDeleting) return;
+
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteTask(task.id);
+      removeTask(task.id);
+      navigate('/chats', { replace: true });
+    } catch (err) {
+      setDeleteError(toErrorMessage(err, 'Failed to delete chat'));
+      setIsDeleting(false);
+    }
+  }, [isDeleting, navigate, removeTask, task]);
 
   if (!task) {
     if (!tasksLoaded) {
@@ -299,6 +320,34 @@ function ExistingChatPage({ chatId }: { chatId: string }) {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex items-center justify-between gap-4 border-b border-zinc-100 px-4 py-3 dark:border-zinc-800 sm:px-6">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <MessageSquare size={16} className="shrink-0 text-zinc-400 dark:text-zinc-500" />
+            <h1 className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              {task.title}
+            </h1>
+          </div>
+          {task.workspace_path && (
+            <p className="mt-1 truncate text-xs text-zinc-400 dark:text-zinc-500">
+              {getProjectLabel(task.workspace_path)}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setDeleteError(null);
+            setShowDeleteConfirm(true);
+          }}
+          disabled={isDeleting}
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-500 dark:hover:bg-red-950/30 dark:hover:text-red-400"
+          aria-label="Delete chat"
+          title="Delete chat"
+        >
+          {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+        </button>
+      </div>
       <TaskChat
         taskId={task.id}
         taskStatus={task.status}
@@ -306,6 +355,21 @@ function ExistingChatPage({ chatId }: { chatId: string }) {
         inputPlaceholder="Message your assistant..."
         workspacePath={task.workspace_path}
       />
+      {showDeleteConfirm && (
+        <DeleteConfirmModal
+          title="Delete chat"
+          body="This removes the chat from Minions. The Hermes session history remains in Hermes."
+          confirmLabel="Delete chat"
+          isConfirming={isDeleting}
+          error={deleteError}
+          onConfirm={handleDelete}
+          onCancel={() => {
+            if (isDeleting) return;
+            setShowDeleteConfirm(false);
+            setDeleteError(null);
+          }}
+        />
+      )}
     </div>
   );
 }
