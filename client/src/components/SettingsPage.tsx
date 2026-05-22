@@ -43,6 +43,14 @@ export function SettingsPage() {
   const reasoningControl = runtimeMeta?.reasoningControl ?? 'picker';
   const shouldUsePicker = modelControl === 'picker' && (defaultRuntime === 'hermes' || modelGroups.length > 0);
   const shouldUseTextField = modelControl === 'text' || (modelControl === 'picker' && defaultRuntime !== 'hermes' && modelGroups.length === 0);
+  const savedDefaultModel = agentDefaults?.model ?? '';
+  const savedModelInCurrentRuntime = Boolean(savedDefaultModel) && modelGroups.some((group) => group.models.some((model) => model.id === savedDefaultModel));
+  const modelPickerValue = !savedDefaultModel || defaultRuntime === 'hermes' || savedModelInCurrentRuntime ? savedDefaultModel : '';
+  const modelPickerTitle = modelPickerValue
+    ? `Default: ${modelPickerValue}`
+    : runtimeDefaultModel
+      ? `Inherits ${runtimeDefaultModel}`
+      : 'Select default model';
 
   useEffect(() => {
     setModelDraft(agentDefaults?.model ?? '');
@@ -188,12 +196,13 @@ export function SettingsPage() {
 
             {shouldUsePicker && (
               <ModelPicker
-                value={agentDefaults?.model ?? ''}
+                value={modelPickerValue}
                 defaultModel={runtimeDefaultModel}
                 modelGroups={modelGroups}
                 disabled={isLoadingDefaults || savingDefaults}
-                title={agentDefaults?.model ? `Default: ${agentDefaults.model}` : 'Select default model'}
-                showInheritOption={false}
+                title={modelPickerTitle}
+                recentScope={defaultRuntime}
+                showInheritOption={defaultRuntime !== 'hermes'}
                 onChange={(nextModel) => saveDefaults({ model: nextModel || null })}
               />
             )}

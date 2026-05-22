@@ -151,8 +151,8 @@ export function Sidebar() {
           </button>
         ) : (
           <div className="flex items-center justify-between w-full px-2">
-            <button onClick={() => navigate('/')} className="shrink-0" title="Home">
-              <img src="/logo.png" alt="Logo" className="w-9 h-9" />
+            <button onClick={() => navigate('/')} className="flex h-9 w-28 shrink-0 items-center" title="Home">
+              <img src="/logo.png" alt="OneInfer" className="h-9 w-full object-contain object-left" />
             </button>
             <button
               onClick={toggleSidebar}
