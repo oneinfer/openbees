@@ -288,6 +288,7 @@ export function TaskDetailPage() {
           taskStatus={task.status}
           initialMessage={initialMessage}
           initialSettings={initialSettings}
+          workspacePath={task.workspace_path}
         />
       </div>
 

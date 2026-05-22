@@ -42,7 +42,7 @@ Minions is not just a task board. After each agent turn, a lightweight completio
 
 ## Quick Start
 
-**Prerequisites:** Node.js 20-23 (Node.js 22 LTS recommended) and [Hermes Agent](https://hermes-agent.nousresearch.com)
+**Prerequisites:** Node.js 20-23 (Node.js 22 LTS recommended). `npm install` and `npm run dev` will detect Hermes Agent, write the discovered `HERMES_AGENT_DIR`, `HERMES_PYTHON`, and `HERMES_HOME` values to `.env` and `.env.example`, and run the official Hermes installer if Hermes is missing.
 
 ```bash
 git clone https://github.com/Agent-3-7/hermes-agent-mission-control.git
@@ -56,6 +56,14 @@ Open [http://localhost:6969](http://localhost:6969).
 For production, run `npm run prod`.
 
 If you hit a `better-sqlite3` install failure on Windows with Node 24, switch to Node 22 LTS and retry. This repo now expects Node `>=20 <24`.
+
+Hermes setup can also be run directly:
+
+```bash
+npm run setup:hermes
+```
+
+By default the setup scans `PATH`, configured env vars, and common Hermes install locations. For a slower broader scan, run with `MINIONS_HERMES_FULL_SCAN=1`.
 
 ## How It Works
 

@@ -3,6 +3,7 @@ import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { Board } from './components/Board';
 import { NewTaskPage } from './components/NewTaskPage';
+import { ChatPage } from './components/ChatPage';
 import { TaskDetailPage } from './components/TaskDetailPage';
 import { SettingsPage } from './components/SettingsPage';
 import { CronPage } from './components/CronPage';
@@ -24,6 +25,8 @@ function AppShell() {
         <Routes>
           <Route path="/" element={<Board />} />
           <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/chats" element={<ChatPage />} />
+          <Route path="/chats/:chatId" element={<ChatPage />} />
           <Route path="/tasks/new" element={<NewTaskPage />} />
           <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
           <Route path="/cron" element={<CronPage />} />

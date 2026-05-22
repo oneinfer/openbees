@@ -14,6 +14,7 @@ import { TASK_STATUSES } from '@shared/types';
 import { STATUS_META } from '../lib/constants';
 import { useStore, optimisticMoveTask } from '../lib/store';
 import { deleteTask, moveTask } from '../lib/api';
+import { isBoardTask } from '../lib/taskState';
 import { Column } from './Column';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { TaskCardOverlay } from './TaskCard';
@@ -30,7 +31,7 @@ export function Board() {
   const removeTask = useStore((s) => s.removeTask);
   const grouped = useMemo(() => {
     const buckets: Record<TaskStatus, Task[]> = { pending: [], in_progress: [], in_review: [], done: [] };
-    for (const t of tasks) {
+    for (const t of tasks.filter(isBoardTask)) {
       if (t.status in buckets) buckets[t.status].push(t);
     }
     for (const s of TASK_STATUSES) buckets[s].sort((a, b) => b.updated_at - a.updated_at);
@@ -40,6 +41,8 @@ export function Board() {
   const [deleteAllStatus, setDeleteAllStatus] = useState<TaskStatus | null>(null);
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [isFlushingPending, setIsFlushingPending] = useState(false);
+  const [flushPendingError, setFlushPendingError] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -60,6 +63,36 @@ export function Board() {
     if (!task || task.status === targetStatus) return;
 
     await optimisticMoveTask(task, targetStatus, upsertTask, moveTask);
+  }
+
+  async function handleFlushPending() {
+    if (isFlushingPending) return;
+
+    const targets = grouped.pending;
+    if (targets.length === 0) return;
+
+    setIsFlushingPending(true);
+    setFlushPendingError(null);
+    try {
+      const results = await Promise.allSettled(targets.map(async (task) => {
+        const optimisticTask = { ...task, status: 'in_progress' as TaskStatus, updated_at: Date.now() };
+        upsertTask(optimisticTask);
+        try {
+          const result = await moveTask(task.id, 'in_progress');
+          upsertTask(result.task);
+        } catch (error) {
+          upsertTask(task);
+          throw error;
+        }
+      }));
+
+      const failed = results.filter((result) => result.status === 'rejected').length;
+      if (failed > 0) {
+        setFlushPendingError(`Failed to flush ${failed} task${failed === 1 ? '' : 's'}.`);
+      }
+    } finally {
+      setIsFlushingPending(false);
+    }
   }
 
   function handleRequestDeleteAll(status: TaskStatus) {
@@ -127,9 +160,16 @@ export function Board() {
             streamingTaskIds={streamingTaskIds}
             isLast={index === TASK_STATUSES.length - 1}
             onRequestDeleteAll={handleRequestDeleteAll}
+            onFlushPending={handleFlushPending}
+            isFlushingPending={isFlushingPending}
           />
         ))}
       </div>
+      {flushPendingError && (
+        <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 shadow-lg dark:border-red-900/70 dark:bg-red-950 dark:text-red-300">
+          {flushPendingError}
+        </div>
+      )}
       <DragOverlay dropAnimation={dropAnimation}>
         {activeTask && (
           <TaskCardOverlay

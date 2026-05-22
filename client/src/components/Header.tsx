@@ -6,13 +6,17 @@ import { getProjectLabel, projectHref } from '../lib/projects';
 export function Header() {
   const location = useLocation();
   const match = useMatch('/tasks/:taskId');
+  const chatMatch = useMatch('/chats/:chatId');
   const taskId = match?.params.taskId;
+  const chatId = chatMatch?.params.chatId;
   const task = useStore((s) => taskId ? s.tasks.find((t) => t.id === taskId) : null);
+  const chat = useStore((s) => chatId ? s.tasks.find((t) => t.id === chatId) : null);
   const projectPath = new URLSearchParams(location.search).get('path');
   const selectedProjectLabel = getProjectLabel(projectPath);
 
   const isSettings = location.pathname === '/settings';
   const isNewTask = location.pathname === '/tasks/new';
+  const isChats = location.pathname === '/chats' || location.pathname.startsWith('/chats/');
   const isCron = location.pathname === '/cron';
   const isSkills = location.pathname === '/skills';
   const isFiles = location.pathname === '/files';
@@ -22,7 +26,11 @@ export function Header() {
   let breadcrumb: { label: string; to?: string }[] = [];
   let truncate = false;
 
-  if (isSettings) {
+  if (isChats) {
+    title = chat?.title ?? 'New Chat';
+    breadcrumb = chat ? [{ label: 'Chats', to: '/chats' }] : [];
+    truncate = true;
+  } else if (isSettings) {
     title = 'Settings';
   } else if (isCron) {
     title = 'Schedules';

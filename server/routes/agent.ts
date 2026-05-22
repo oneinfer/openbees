@@ -5,7 +5,8 @@ import { taskRunSettings } from '../agent-settings.js';
 import { AGENT_RUNTIMES, REASONING_EFFORTS } from '../../shared/types.js';
 import type { AgentDefaults, AgentRuntime, Task, TaskAgentSettings, ReasoningEffort } from '../../shared/types.js';
 import type { AgentRegistry } from '../adapters/registry.js';
-import { setDefaultRuntime } from '../runtime-config.js';
+import { runtimeInstallResponse, setDefaultRuntime } from '../runtime-config.js';
+import { installRuntime } from '../runtime-install.js';
 
 const FALLBACK_DEFAULTS: AgentDefaults = {
   runtime: 'hermes',
@@ -117,6 +118,27 @@ export function createAgentRouter(agents: AgentRegistry): Router {
 
   router.get('/runtimes', (_req, res) => {
     res.json(agents.runtimes());
+  });
+
+  router.post('/runtimes/:runtime/install', async (req, res) => {
+    const runtime = req.params.runtime;
+    if (typeof runtime !== 'string' || !(AGENT_RUNTIMES as readonly string[]).includes(runtime)) {
+      return res.status(400).json({ error: `runtime must be one of: ${AGENT_RUNTIMES.join(', ')}` });
+    }
+
+    const installTarget = runtime as AgentRuntime;
+    if (!runtimeInstallResponse(installTarget)) {
+      return res.status(400).json({ error: 'This runtime cannot be installed automatically' });
+    }
+
+    try {
+      res.json(await installRuntime(installTarget));
+    } catch (error) {
+      res.status(503).json({
+        error: toErrorMessage(error, 'Failed to install runtime'),
+        ...(runtimeInstallResponse(installTarget) ?? {}),
+      });
+    }
   });
 
   return router;

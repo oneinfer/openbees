@@ -172,6 +172,25 @@ filesRouter.get('/download', async (req, res) => {
   }
 });
 
+filesRouter.get('/view', async (req, res) => {
+  try {
+    const targetPath = resolveRequiredPath(req.query.path);
+    const targetStats = await stat(targetPath);
+    const targetName = basename(targetPath) || 'file';
+
+    if (!targetStats.isFile()) {
+      throw new FileRouteError(400, 'Path is not a viewable file', 'NOT_FILE');
+    }
+
+    res.setHeader('Content-Disposition', `inline; filename="${safeDispositionName(targetName)}"`);
+    res.sendFile(targetPath, (viewError) => {
+      if (viewError) sendStreamingFileError(res, viewError, 'Failed to view file');
+    });
+  } catch (error) {
+    sendFileError(res, error, 'Failed to view file');
+  }
+});
+
 filesRouter.put('/write', async (req, res) => {
   try {
     const body = parseWriteRequest(req.body);
@@ -416,6 +435,10 @@ function validateFileName(value: string): string {
     throw new FileRouteError(400, 'Name cannot include path separators', 'BAD_REQUEST');
   }
   return name;
+}
+
+function safeDispositionName(value: string): string {
+  return value.replace(/["\\\r\n]/g, '_') || 'file';
 }
 
 function stringArrayFromField(value: unknown): string[] {

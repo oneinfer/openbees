@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { Router } from 'express';
 import { resolveWorkspacePath } from '../workspace-access.js';
@@ -17,6 +18,11 @@ function parseInitialPath(value: unknown): string | null {
 
 function toPowerShellLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+function parsePath(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('path is required');
+  return resolveWorkspacePath(value.trim());
 }
 
 async function openWindowsDirectoryPicker(initialPath: string | null): Promise<string | null> {
@@ -97,5 +103,38 @@ systemRouter.post('/select-directory', async (req, res) => {
     res.json({ path });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to open folder picker' });
+  }
+});
+
+systemRouter.post('/open-path', async (req, res) => {
+  let targetPath: string;
+  try {
+    targetPath = parsePath(req.body?.path);
+    await stat(targetPath);
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid path' });
+  }
+
+  try {
+    switch (process.platform) {
+      case 'win32':
+        await execFileAsync('powershell.exe', [
+          '-NoProfile',
+          '-Command',
+          `Start-Process -LiteralPath ${toPowerShellLiteral(targetPath)}`,
+        ], { windowsHide: true });
+        break;
+      case 'darwin':
+        await execFileAsync('open', [targetPath]);
+        break;
+      case 'linux':
+        await execFileAsync('xdg-open', [targetPath]);
+        break;
+      default:
+        throw new Error(`Opening files is not supported on ${process.platform}`);
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to open path' });
   }
 });

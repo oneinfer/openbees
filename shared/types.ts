@@ -4,6 +4,9 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const TASK_MODES = ['direct', 'plan'] as const;
 export type TaskMode = (typeof TASK_MODES)[number];
 
+export const TASK_KINDS = ['task', 'chat'] as const;
+export type TaskKind = (typeof TASK_KINDS)[number];
+
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
@@ -23,6 +26,7 @@ export interface Task {
   title: string;
   description: string | null;
   status: TaskStatus;
+  task_kind: TaskKind;
   task_mode: TaskMode;
   workspace_path: string | null;
   agent_runtime: AgentRuntime | null;
@@ -34,6 +38,13 @@ export interface Task {
   last_viewed_at: number | null;
   last_context_used_tokens: number | null;
   last_context_window_tokens: number | null;
+}
+
+export interface Project {
+  path: string;
+  label: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface TaskMessage {
@@ -50,6 +61,7 @@ export interface ToolProgressEvent {
   status: 'running' | 'completed' | 'error';
   duration?: number;
   label?: string;
+  details?: unknown;
 }
 
 export type LiveChatRunStatus = 'streaming' | 'done' | 'error';
@@ -66,6 +78,8 @@ export type BoardEvent =
   | { type: 'task_created'; task: Task }
   | { type: 'task_updated'; task: Task }
   | { type: 'task_deleted'; taskId: string }
+  | { type: 'project_saved'; project: Project }
+  | { type: 'project_deleted'; path: string; taskIds: string[] }
   | { type: 'task_runs_snapshot'; runs: TaskRunState[] }
   | { type: 'task_run_updated'; run: TaskRunState };
 
@@ -86,6 +100,16 @@ export interface LiveChatRun {
 export interface ContextUsage {
   used_tokens: number;
   window_tokens: number;
+}
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  path: string;
+  mimeType: string;
+  size: number;
+  kind: 'image' | 'file';
+  visualSummary?: string;
 }
 
 export interface SessionMetadata {
@@ -116,6 +140,10 @@ export interface AgentRuntimeOption {
   description: string;
   status: 'ready' | 'configure';
   command: string | null;
+  installed: boolean;
+  installable: boolean;
+  packageName?: string;
+  installCommand?: string;
   modelControl: AgentRuntimeModelControl;
   reasoningControl: AgentRuntimeReasoningControl;
 }
@@ -123,6 +151,15 @@ export interface AgentRuntimeOption {
 export interface AgentRuntimesResponse {
   defaultRuntime: AgentRuntime;
   options: AgentRuntimeOption[];
+}
+
+export interface AgentRuntimeInstallResponse {
+  runtime: AgentRuntime;
+  installed: boolean;
+  command: string | null;
+  packageName: string;
+  installCommand: string;
+  output?: string;
 }
 
 export interface AgentModelOption {

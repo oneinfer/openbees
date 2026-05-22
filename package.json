@@ -9,6 +9,7 @@
   },
   "scripts": {
     "preinstall": "node scripts/check-runtime.mjs",
+    "setup:hermes": "node scripts/hermes-setup.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:server": "node scripts/dev.mjs",
     "clean": "node scripts/clean.mjs",

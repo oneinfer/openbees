@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   title             TEXT NOT NULL,
   description       TEXT,
   status            TEXT NOT NULL DEFAULT 'pending',
+  task_kind         TEXT NOT NULL DEFAULT 'task',
   task_mode         TEXT NOT NULL DEFAULT 'direct',
   workspace_path    TEXT,
   agent_runtime     TEXT,
@@ -17,6 +18,15 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+
+CREATE TABLE IF NOT EXISTS projects (
+  path              TEXT PRIMARY KEY,
+  label             TEXT,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at);
 
 CREATE TABLE IF NOT EXISTS app_settings (
   key               TEXT PRIMARY KEY,

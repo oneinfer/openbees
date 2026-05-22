@@ -1,9 +1,12 @@
 import { useEffect, useRef } from 'react';
 import type { BoardEvent } from '@shared/types';
 import { useStore } from '../lib/store';
-import { fetchTasks } from '../lib/api';
+import { fetchProjects, fetchTasks } from '../lib/api';
 
 export function useTasks() {
+  const setProjects = useStore((s) => s.setProjects);
+  const upsertProject = useStore((s) => s.upsertProject);
+  const removeProject = useStore((s) => s.removeProject);
   const setTasks = useStore((s) => s.setTasks);
   const upsertTask = useStore((s) => s.upsertTask);
   const removeTask = useStore((s) => s.removeTask);
@@ -14,6 +17,10 @@ export function useTasks() {
   useEffect(() => {
     fetchTasks().then((res) => setTasks(res.tasks)).catch(console.error);
   }, [setTasks]);
+
+  useEffect(() => {
+    fetchProjects().then((res) => setProjects(res.projects)).catch(console.error);
+  }, [setProjects]);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -27,6 +34,7 @@ export function useTasks() {
       es.onopen = () => {
         if (retryRef.current > 0) {
           fetchTasks().then((res) => setTasks(res.tasks)).catch(console.error);
+          fetchProjects().then((res) => setProjects(res.projects)).catch(console.error);
         }
         retryRef.current = 0;
       };
@@ -38,6 +46,10 @@ export function useTasks() {
             upsertTask(event.task);
           } else if (event.type === 'task_deleted') {
             removeTask(event.taskId);
+          } else if (event.type === 'project_saved') {
+            upsertProject(event.project);
+          } else if (event.type === 'project_deleted') {
+            removeProject(event.path, event.taskIds);
           } else if (event.type === 'task_runs_snapshot') {
             setStreamingTasks(event.runs.filter((r) => r.status === 'streaming').map((r) => r.taskId));
           } else if (event.type === 'task_run_updated') {
@@ -61,5 +73,5 @@ export function useTasks() {
       clearTimeout(retryTimeout);
       es?.close();
     };
-  }, [setTasks, upsertTask, removeTask, setStreamingTasks, setTaskStreaming]);
+  }, [setProjects, setTasks, upsertProject, removeProject, upsertTask, removeTask, setStreamingTasks, setTaskStreaming]);
 }

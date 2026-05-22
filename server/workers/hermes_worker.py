@@ -1383,6 +1383,7 @@ def _run_chat(request_id: str, request: dict[str, Any]) -> None:
                 "tool": tool_name,
                 "status": "running",
                 "label": str(preview) if preview else None,
+                "details": _json_safe(tool_args),
             })
             return
 
@@ -1394,6 +1395,7 @@ def _run_chat(request_id: str, request: dict[str, Any]) -> None:
                 "status": "error" if kwargs.get("is_error") else "completed",
                 "duration": kwargs.get("duration"),
                 "label": str(preview) if preview else None,
+                "details": _json_safe(tool_args),
             })
 
     agent = _create_agent(

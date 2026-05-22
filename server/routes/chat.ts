@@ -13,6 +13,14 @@ import { parseRunSettingsBody } from '../agent-settings.js';
 import { toErrorMessage } from '../errors.js';
 import { startTaskRun } from '../task-runner.js';
 import type { Task } from '../../shared/types.js';
+import {
+  appendAttachmentContext,
+  attachmentUploadMiddleware,
+  cleanupUploadedAttachments,
+  saveTaskAttachments,
+  uploadedAttachments,
+} from '../attachments.js';
+import { enrichImageAttachmentContext } from '../image-context.js';
 
 export const chatRouter = Router();
 
@@ -51,8 +59,9 @@ chatRouter.get('/:id/session', async (req, res) => {
   }
 });
 
-chatRouter.post('/:id/messages', async (req, res) => {
-  const task = getTask(req.params.id);
+chatRouter.post('/:id/messages', attachmentUploadMiddleware, async (req, res) => {
+  const taskId = String(req.params.id);
+  const task = getTask(taskId);
   if (!task) return res.status(404).json({ error: 'Task not found' });
   if (task.status === 'pending') {
     return res.status(409).json({ error: 'Move this task to In Progress before sending messages' });
@@ -86,7 +95,16 @@ chatRouter.post('/:id/messages', async (req, res) => {
   }
 
   try {
-    const run = startTaskRun(runTask, content);
+    const files = uploadedAttachments(req);
+    let messageContent = content;
+    try {
+      const attachments = await enrichImageAttachmentContext(await saveTaskAttachments(runTask.id, files));
+      messageContent = appendAttachmentContext(content, attachments);
+    } finally {
+      await cleanupUploadedAttachments(files);
+    }
+
+    const run = startTaskRun(runTask, messageContent);
     res.status(202).json({ runId: run.runId, run });
   } catch (error) {
     res.status(409).json({ error: toErrorMessage(error, 'Failed to start task run') });

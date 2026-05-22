@@ -27,6 +27,7 @@ type LiveEvent =
       status?: ToolProgressEvent['status'];
       duration?: number;
       label?: string;
+      details?: unknown;
     }
   | { type: 'done'; sessionId?: string; context?: ContextUsage | null }
   | { type: 'error'; error?: string };
@@ -93,6 +94,7 @@ function mergeToolProgress(tools: ToolProgressEvent[], event: Extract<LiveEvent,
     status: event.status ?? 'running',
     duration: event.duration,
     label: event.label,
+    details: event.details,
   };
 
   if (tool.status === 'running') return [...tools, tool];
@@ -383,32 +385,46 @@ export function useChat() {
     setActiveTools([]);
   }, []);
 
-  const sendMessage = useCallback(async (taskId: string, content: string, settings?: AgentRunSettings) => {
+  const sendMessage = useCallback(async (taskId: string, content: string, settings?: AgentRunSettings, attachments?: File[]) => {
     openLiveSubscription(taskId);
 
     const abort = new AbortController();
     postAbortRef.current = abort;
     const runSettings = compactSettings(settings);
+    const hasAttachments = Boolean(attachments?.length);
 
     try {
+      const body = hasAttachments ? new FormData() : JSON.stringify({
+        content,
+        ...(runSettings ? { settings: runSettings } : {}),
+      });
+      const headers: HeadersInit | undefined = hasAttachments ? undefined : { 'Content-Type': 'application/json' };
+
+      if (body instanceof FormData) {
+        body.append('content', content);
+        if (runSettings?.runtime) body.append('runtime', runSettings.runtime);
+        if (runSettings?.model) body.append('model', runSettings.model);
+        if (runSettings?.reasoningEffort) body.append('reasoningEffort', runSettings.reasoningEffort);
+        for (const attachment of attachments ?? []) {
+          body.append('attachments', attachment, attachment.name);
+        }
+      }
+
       const res = await fetch(`${BASE}/tasks/${encodeURIComponent(taskId)}/messages`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content,
-          ...(runSettings ? { settings: runSettings } : {}),
-        }),
+        ...(headers ? { headers } : {}),
+        body,
         signal: abort.signal,
       });
 
-      const body = await res.json().catch(() => ({})) as { run?: LiveChatRun; error?: string };
+      const responseBody = await res.json().catch(() => ({})) as { run?: LiveChatRun; error?: string };
 
       if (!res.ok) {
-        if (res.status !== 409) appendLocalSendError(content, body.error || `HTTP ${res.status}`);
+        if (res.status !== 409) appendLocalSendError(content, responseBody.error || `HTTP ${res.status}`);
         return;
       }
 
-      if (body.run) applySnapshot(body.run);
+      if (responseBody.run) applySnapshot(responseBody.run);
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         appendLocalSendError(content, toErrorMessage(err, 'Failed to send message.'));

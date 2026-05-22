@@ -2,6 +2,7 @@ import type {
   AgentDefaults,
   AgentModelsResponse,
   AgentRuntime,
+  AgentRuntimeInstallResponse,
   AgentRuntimesResponse,
   AgentRunSettings,
   CronJob,
@@ -15,9 +16,11 @@ import type {
   FileUploadResponse,
   FileWriteResponse,
   ContextUsage,
+  Project,
   SessionMetadata,
   Task,
   TaskAgentSettings,
+  TaskKind,
   TaskMode,
   TaskMessage,
   TaskStatus,
@@ -76,6 +79,24 @@ export function fetchTasks() {
   return request<{ tasks: Task[] }>('/tasks');
 }
 
+export function fetchProjects() {
+  return request<{ projects: Project[] }>('/projects');
+}
+
+export function createProject(workspacePath: string) {
+  return request<{ project: Project }>('/projects', {
+    method: 'POST',
+    body: JSON.stringify({ workspacePath }),
+  });
+}
+
+export function deleteProject(workspacePath: string) {
+  return request<{ ok: boolean; taskIds: string[] }>('/projects', {
+    method: 'DELETE',
+    body: JSON.stringify({ workspacePath }),
+  });
+}
+
 export function moveTask(id: string, status: TaskStatus) {
   return request<{ task: Task }>(`/tasks/${id}/move`, {
     method: 'POST',
@@ -111,10 +132,32 @@ export function createTask(
   model?: string | null,
   reasoningEffort?: ReasoningEffort | null,
   taskMode?: TaskMode,
+  attachments?: File[],
+  taskKind?: TaskKind,
 ) {
+  if (attachments?.length) {
+    const formData = new FormData();
+    formData.append('description', description);
+    appendOptionalFormValue(formData, 'title', title);
+    appendOptionalFormValue(formData, 'workspacePath', workspacePath);
+    appendOptionalFormValue(formData, 'runtime', runtime);
+    appendOptionalFormValue(formData, 'model', model);
+    appendOptionalFormValue(formData, 'reasoningEffort', reasoningEffort);
+    appendOptionalFormValue(formData, 'taskMode', taskMode);
+    appendOptionalFormValue(formData, 'taskKind', taskKind);
+    for (const attachment of attachments) {
+      formData.append('attachments', attachment, attachment.name);
+    }
+
+    return request<{ task: Task }>('/tasks', {
+      method: 'POST',
+      body: formData,
+    });
+  }
+
   return request<{ task: Task }>('/tasks', {
     method: 'POST',
-    body: JSON.stringify({ description, title, workspacePath, runtime, model, reasoningEffort, taskMode }),
+    body: JSON.stringify({ description, title, workspacePath, runtime, model, reasoningEffort, taskMode, taskKind }),
   });
 }
 
@@ -141,6 +184,13 @@ export function pickWorkspaceDirectory(initialPath?: string | null) {
   });
 }
 
+export function openSystemPath(path: string) {
+  return request<{ ok: boolean }>('/system/open-path', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  });
+}
+
 export function fetchAgentModels(runtime?: AgentRuntime | null) {
   const query = runtime ? `?runtime=${encodeURIComponent(runtime)}` : '';
   return request<AgentModelsResponse>(`/agent/models${query}`);
@@ -148,6 +198,12 @@ export function fetchAgentModels(runtime?: AgentRuntime | null) {
 
 export function fetchAgentRuntimes() {
   return request<AgentRuntimesResponse>('/agent/runtimes');
+}
+
+export function installAgentRuntime(runtime: AgentRuntime) {
+  return request<AgentRuntimeInstallResponse>(`/agent/runtimes/${encodeURIComponent(runtime)}/install`, {
+    method: 'POST',
+  });
 }
 
 export function updateAgentDefaults(updates: { runtime?: AgentRuntime | null; model?: string | null; reasoningEffort?: ReasoningEffort | null }) {
@@ -184,6 +240,10 @@ export function readFile(path: string) {
 
 export function fileDownloadUrl(path: string) {
   return `${BASE}/files/download?path=${encodeURIComponent(path)}`;
+}
+
+export function fileViewUrl(path: string) {
+  return `${BASE}/files/view?path=${encodeURIComponent(path)}`;
 }
 
 export function writeFile(path: string, content: string, expectedModifiedAt?: number, overwrite = false) {
@@ -266,4 +326,8 @@ export function deleteCronJob(jobId: string) {
 function fileRelativePath(file: File): string {
   const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
   return relativePath && relativePath.length > 0 ? relativePath : file.name;
+}
+
+function appendOptionalFormValue(formData: FormData, key: string, value: string | null | undefined): void {
+  if (value !== undefined && value !== null && value !== '') formData.append(key, value);
 }
