@@ -113,6 +113,15 @@ function resolveWorkerScript(): string {
   return found;
 }
 
+function createHermesWorkerEnv(): NodeJS.ProcessEnv {
+  const { PYTHONHOME: _pythonHome, PYTHONPATH: _pythonPath, ...env } = process.env;
+  return {
+    ...env,
+    HERMES_QUIET: '1',
+    HERMES_YOLO_MODE: '1',
+  };
+}
+
 function formatWorkerError(error: string | WorkerErrorPayload | undefined): string {
   if (!error) return 'Hermes worker error';
   if (typeof error === 'string') return error;
@@ -343,11 +352,7 @@ class HermesWorkerClient {
     mkdirSync(workspace, { recursive: true });
     const child = spawn(python, [script], {
       cwd: workspace,
-      env: {
-        ...process.env,
-        HERMES_QUIET: '1',
-        HERMES_YOLO_MODE: '1',
-      },
+      env: createHermesWorkerEnv(),
     });
 
     this.child = child;

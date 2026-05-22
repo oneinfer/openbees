@@ -31,17 +31,26 @@ async function openWindowsDirectoryPicker(initialPath: string | null): Promise<s
     : '';
   const script = [
     'Add-Type -AssemblyName System.Windows.Forms',
+    '$owner = New-Object System.Windows.Forms.Form',
+    '$owner.TopMost = $true',
+    '$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen',
+    '$owner.Width = 1',
+    '$owner.Height = 1',
+    '$owner.ShowInTaskbar = $false',
     '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
     "$dialog.Description = 'Select working directory'",
     '$dialog.ShowNewFolderButton = $false',
     initialSelection,
-    'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {',
+    '$result = $dialog.ShowDialog($owner)',
+    '$owner.Dispose()',
+    'if ($result -eq [System.Windows.Forms.DialogResult]::OK) {',
     '  [Console]::Out.Write($dialog.SelectedPath)',
     '}',
   ].filter(Boolean).join('; ');
 
   const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-STA', '-Command', script], {
     encoding: 'utf8',
+    timeout: 60_000,
     windowsHide: false,
   });
   const selectedPath = stdout.trim();
