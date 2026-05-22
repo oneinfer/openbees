@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
-import { ArrowUp, Loader2, ChevronDown, ChevronRight, Check, Terminal, FileText, FilePenLine, Globe, Code, Wrench } from 'lucide-react';
+import { ArrowUp, Loader2, ChevronDown, ChevronRight, Check, Terminal, FileText, FilePenLine, Globe, Code, Wrench, Image as ImageIcon, X } from 'lucide-react';
 import { InputToolbar, ContextRing } from './InputToolbar';
 import {
   AttachmentPicker,
@@ -12,8 +12,9 @@ import { MarkdownContent } from './MarkdownContent';
 import { useChat, ToolProgressEvent } from '../hooks/useChat';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { handleChatKeyDown } from '../lib/keyboard';
+import { fileViewUrl } from '../lib/api';
 import type { AgentRunSettings } from '../lib/api';
-import type { TaskStatus } from '@shared/types';
+import type { ChatAttachment, TaskStatus } from '@shared/types';
 
 interface TaskChatProps {
   taskId: string;
@@ -69,6 +70,7 @@ const TOOL_ICONS: Record<string, typeof Terminal> = {
 
 const CHAT_COLUMN_CLASS = 'w-full max-w-[760px] mx-auto';
 const ATTACHMENT_CONTEXT_PATTERN = /\n*\s*The user attached the following file(?:s)?\.[\s\S]*?<attachments>[\s\S]*?<\/attachments>\s*$/;
+const ATTACHMENTS_PATTERN = /<attachments>[\s\S]*?<\/attachments>/;
 
 function getToolIcon(name: string) {
   return TOOL_ICONS[name] ?? Wrench;
@@ -80,6 +82,125 @@ function formatToolName(name: string): string {
 
 function displayMessageContent(content: string): string {
   return content.replace(ATTACHMENT_CONTEXT_PATTERN, '').trimEnd();
+}
+
+function parseMessageAttachments(content: string): ChatAttachment[] {
+  const match = content.match(ATTACHMENTS_PATTERN);
+  if (!match || typeof DOMParser === 'undefined') return [];
+
+  const document = new DOMParser().parseFromString(match[0], 'application/xml');
+  if (document.querySelector('parsererror')) return [];
+
+  return Array.from(document.querySelectorAll('attachment')).map((element, index) => {
+    const text = (tagName: string) => element.querySelector(tagName)?.textContent ?? '';
+    const mimeType = text('mime_type') || 'application/octet-stream';
+    const path = text('absolute_path');
+    const name = text('name') || path.split(/[\\/]/).pop() || 'attachment';
+    const size = Number(text('size_bytes'));
+    const kind = element.getAttribute('kind') === 'image' || mimeType.startsWith('image/') ? 'image' : 'file';
+
+    return {
+      id: `${path || name}-${index}`,
+      name,
+      path,
+      mimeType,
+      size: Number.isFinite(size) ? size : 0,
+      kind,
+    };
+  }).filter((attachment) => attachment.path);
+}
+
+function MessageAttachmentList({
+  attachments,
+  onOpenImage,
+}: {
+  attachments: ChatAttachment[];
+  onOpenImage: (attachment: ChatAttachment) => void;
+}) {
+  if (attachments.length === 0) return null;
+
+  return (
+    <div className="mt-2 grid max-w-full gap-2">
+      {attachments.map((attachment) => {
+        const isImage = attachment.kind === 'image' || attachment.mimeType.startsWith('image/');
+        const href = fileViewUrl(attachment.path);
+
+        if (isImage) {
+          return (
+            <button
+              key={attachment.id}
+              type="button"
+              onClick={() => onOpenImage(attachment)}
+              className="group overflow-hidden rounded-lg border border-zinc-200 bg-white text-left shadow-sm transition-colors hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600"
+              title={`Open ${attachment.name}`}
+            >
+              <img
+                src={href}
+                alt={attachment.name}
+                className="max-h-56 w-full max-w-sm bg-zinc-100 object-contain dark:bg-zinc-950"
+                loading="lazy"
+              />
+              <span className="flex items-center gap-2 px-2.5 py-2 text-xs text-zinc-500 dark:text-zinc-400">
+                <ImageIcon size={14} className="shrink-0" />
+                <span className="min-w-0 truncate">{attachment.name}</span>
+              </span>
+            </button>
+          );
+        }
+
+        return (
+          <a
+            key={attachment.id}
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex max-w-sm items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            title={`Open ${attachment.name}`}
+          >
+            <FileText size={14} className="shrink-0 text-zinc-400" />
+            <span className="min-w-0 truncate">{attachment.name}</span>
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
+function ImageAttachmentViewer({
+  attachment,
+  onClose,
+}: {
+  attachment: ChatAttachment;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={attachment.name}
+      onClick={onClose}
+    >
+      <button
+        type="button"
+        className="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-lg bg-white/10 text-white transition-colors hover:bg-white/20"
+        onClick={onClose}
+        aria-label="Close image"
+        title="Close"
+      >
+        <X size={18} />
+      </button>
+      <img
+        src={fileViewUrl(attachment.path)}
+        alt={attachment.name}
+        className="max-h-[88vh] max-w-[92vw] rounded-lg bg-white object-contain shadow-2xl dark:bg-zinc-950"
+        onClick={(event) => event.stopPropagation()}
+      />
+      <div className="absolute bottom-4 left-4 right-4 mx-auto max-w-xl truncate rounded-lg bg-zinc-950/70 px-3 py-2 text-center text-xs text-white">
+        {attachment.name}
+      </div>
+    </div>
+  );
 }
 
 function ToolCallBlock({ tool }: { tool: ToolProgressEvent }) {
@@ -127,6 +248,7 @@ export function TaskChat({
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<ChatArtifact | null>(null);
+  const [selectedAttachment, setSelectedAttachment] = useState<ChatAttachment | null>(null);
   const [loadedTaskId, setLoadedTaskId] = useState<string | null>(null);
   const startupRef = useRef({ taskId, initialMessage, initialSettings });
   if (startupRef.current.taskId !== taskId) {
@@ -149,6 +271,7 @@ export function TaskChat({
     let cancelled = false;
     setLoadedTaskId(null);
     setSelectedArtifact(null);
+    setSelectedAttachment(null);
     didInitialScrollRef.current = false;
     loadMessages(taskId)
       .then((loadedMessages) => {
@@ -179,14 +302,15 @@ export function TaskChat({
 
   const handleSubmit = useCallback(async () => {
     const text = input.trim();
-    if (!text || inputDisabled) return;
     const files = attachments.map((attachment) => attachment.file);
+    if ((!text && files.length === 0) || inputDisabled) return;
+    const messageText = text || (files.length === 1 ? 'Attached file.' : 'Attached files.');
     setInput('');
     setAttachments([]);
     for (const attachment of attachments) {
       if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
     }
-    await sendMessage(taskId, text, { runtime, model, reasoningEffort }, files);
+    await sendMessage(taskId, messageText, { runtime, model, reasoningEffort }, files);
   }, [attachments, input, inputDisabled, taskId, sendMessage, runtime, model, reasoningEffort]);
 
   const handleKeyDown = useCallback(
@@ -225,10 +349,15 @@ export function TaskChat({
             {messages.map((msg, idx) => {
               if (msg.role === 'user') {
                 const userContent = displayMessageContent(msg.content);
+                const messageAttachments = parseMessageAttachments(msg.content);
                 return (
                   <div key={msg.id} className="flex justify-end">
-                    <div className="max-w-[85%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap leading-relaxed bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100">
-                      {userContent}
+                    <div className="max-w-[85%] rounded-2xl bg-zinc-100 px-4 py-2.5 text-sm leading-relaxed text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
+                      {userContent && <div className="whitespace-pre-wrap">{userContent}</div>}
+                      <MessageAttachmentList
+                        attachments={messageAttachments}
+                        onOpenImage={setSelectedAttachment}
+                      />
                     </div>
                   </div>
                 );
@@ -326,7 +455,7 @@ export function TaskChat({
               {context && <ContextRing context={context} />}
               <button
                 onClick={handleSubmit}
-                disabled={!input.trim() || inputDisabled}
+                disabled={(!input.trim() && attachments.length === 0) || inputDisabled}
                 className="p-2 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 disabled:opacity-30 hover:bg-zinc-700 dark:hover:bg-zinc-300 transition-colors"
               >
                 <ArrowUp size={14} />
@@ -344,6 +473,12 @@ export function TaskChat({
             onClose={() => setSelectedArtifact(null)}
           />
         </aside>
+      )}
+      {selectedAttachment && (
+        <ImageAttachmentViewer
+          attachment={selectedAttachment}
+          onClose={() => setSelectedAttachment(null)}
+        />
       )}
     </div>
   );

@@ -91,13 +91,16 @@ export function appendAttachmentContext(message: string, attachments: ChatAttach
       `    <mime_type>${escapeXml(attachment.mimeType)}</mime_type>`,
       `    <size_bytes>${attachment.size}</size_bytes>`,
       `    <absolute_path>${escapeXml(attachment.path)}</absolute_path>`,
+      ...(attachment.visualSummary
+        ? ['    <visual_summary>', indentXmlText(escapeXml(attachment.visualSummary), 6), '    </visual_summary>']
+        : []),
       '  </attachment>',
     ].join('\n');
   });
 
   return `${message.trimEnd()}
 
-The user attached the following file${attachments.length === 1 ? '' : 's'}. Use the absolute path to inspect image/file content when it is relevant.
+The user attached the following file${attachments.length === 1 ? '' : 's'}. Use the visual summary and absolute path to understand image/file content when it is relevant.
 <attachments>
 ${lines.join('\n')}
 </attachments>`;
@@ -115,4 +118,9 @@ function escapeXml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function indentXmlText(value: string, spaces: number): string {
+  const padding = ' '.repeat(spaces);
+  return value.split('\n').map((line) => `${padding}${line}`).join('\n');
 }

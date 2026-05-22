@@ -20,6 +20,7 @@ import {
   saveTaskAttachments,
   uploadedAttachments,
 } from '../attachments.js';
+import { enrichImageAttachmentContext } from '../image-context.js';
 
 export const tasksRouter = Router();
 
@@ -102,7 +103,7 @@ tasksRouter.post('/', attachmentUploadMiddleware, async (req, res) => {
 
   const files = uploadedAttachments(req);
   try {
-    const attachments = await saveTaskAttachments(task.id, files);
+    const attachments = await enrichImageAttachmentContext(await saveTaskAttachments(task.id, files));
     if (attachments.length > 0) {
       task = updateTask(task.id, {
         description: appendAttachmentContext(description, attachments),

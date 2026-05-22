@@ -52,19 +52,20 @@ export function NewTaskPage() {
 
   const handleSubmit = useCallback(async () => {
     const text = input.trim();
-    if (!text || isCreating || (!defaults && isLoading)) return;
+    const files = attachments.map((attachment) => attachment.file);
+    if ((!text && files.length === 0) || isCreating || (!defaults && isLoading)) return;
     setIsCreating(true);
     setWorkspaceError(null);
     try {
       await createTask(
-        text,
+        text || (files.length === 1 ? 'Attached file.' : 'Attached files.'),
         undefined,
         normalizedWorkspacePath || null,
         runtime,
         model,
         reasoningEffort,
         planModeEnabled ? 'plan' : 'direct',
-        attachments.map((attachment) => attachment.file),
+        files,
       );
       if (normalizedWorkspacePath) localStorage.setItem('minions:lastWorkspacePath', normalizedWorkspacePath);
       else localStorage.removeItem('minions:lastWorkspacePath');
@@ -202,7 +203,7 @@ export function NewTaskPage() {
             </div>
             <button
               onClick={handleSubmit}
-              disabled={!input.trim() || isCreating || (!defaults && isLoading)}
+              disabled={(!input.trim() && attachments.length === 0) || isCreating || (!defaults && isLoading)}
               className="p-2.5 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 disabled:opacity-30 hover:bg-zinc-700 dark:hover:bg-zinc-300 transition-colors"
             >
               {isCreating ? (

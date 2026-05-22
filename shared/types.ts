@@ -109,6 +109,7 @@ export interface ChatAttachment {
   mimeType: string;
   size: number;
   kind: 'image' | 'file';
+  visualSummary?: string;
 }
 
 export interface SessionMetadata {

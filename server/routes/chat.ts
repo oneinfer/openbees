@@ -20,6 +20,7 @@ import {
   saveTaskAttachments,
   uploadedAttachments,
 } from '../attachments.js';
+import { enrichImageAttachmentContext } from '../image-context.js';
 
 export const chatRouter = Router();
 
@@ -97,7 +98,7 @@ chatRouter.post('/:id/messages', attachmentUploadMiddleware, async (req, res) =>
     const files = uploadedAttachments(req);
     let messageContent = content;
     try {
-      const attachments = await saveTaskAttachments(runTask.id, files);
+      const attachments = await enrichImageAttachmentContext(await saveTaskAttachments(runTask.id, files));
       messageContent = appendAttachmentContext(content, attachments);
     } finally {
       await cleanupUploadedAttachments(files);

@@ -242,6 +242,10 @@ export function fileDownloadUrl(path: string) {
   return `${BASE}/files/download?path=${encodeURIComponent(path)}`;
 }
 
+export function fileViewUrl(path: string) {
+  return `${BASE}/files/view?path=${encodeURIComponent(path)}`;
+}
+
 export function writeFile(path: string, content: string, expectedModifiedAt?: number, overwrite = false) {
   return request<FileWriteResponse>('/files/write', {
     method: 'PUT',
