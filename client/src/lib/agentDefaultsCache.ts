@@ -1,6 +1,6 @@
 import { AGENT_RUNTIMES, REASONING_EFFORTS, type AgentDefaults, type AgentRuntime, type ReasoningEffort } from '@shared/types';
 
-const AGENT_DEFAULTS_CACHE_KEY = 'minions.agentDefaults.v1';
+const AGENT_DEFAULTS_CACHE_KEY = 'bees.agentDefaults.v1';
 
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';

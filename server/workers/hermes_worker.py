@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JSONL bridge between Minions and Hermes AIAgent."""
+"""JSONL bridge between Bees and Hermes AIAgent."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ _CONFIG_CACHE: dict[str, Any] | None = None
 _CONFIG_MTIME: float = 0.0
 _MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 try:
-    _MODEL_LIST_CACHE_TTL_SECONDS = max(0.0, float(os.environ.get("MINIONS_MODEL_LIST_CACHE_TTL_SECONDS", "60")))
+    _MODEL_LIST_CACHE_TTL_SECONDS = max(0.0, float(os.environ.get("BEES_MODEL_LIST_CACHE_TTL_SECONDS", "60")))
 except ValueError:
     _MODEL_LIST_CACHE_TTL_SECONDS = 60.0
 
@@ -815,7 +815,7 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
-def _strip_minions_user_scaffold(content: str) -> str:
+def _strip_bees_user_scaffold(content: str) -> str:
     stripped = content.lstrip()
     if stripped.startswith("[TASK AGENT]"):
         marker = "[TASK DESCRIPTION]"
@@ -883,7 +883,7 @@ def _project_session_messages(session_id: Any, task_id: Any = None) -> dict[str,
 
         content = _content_to_text(row.get("content"))
         if role == "user":
-            content = _strip_minions_user_scaffold(content)
+            content = _strip_bees_user_scaffold(content)
         if role == "assistant" and not content.strip() and row.get("tool_calls"):
             continue
         if not content.strip():
@@ -1222,7 +1222,7 @@ def _create_agent(
         "api_key": runtime.get("api_key"),
         "quiet_mode": True,
         "verbose_logging": False,
-        "platform": "minions",
+        "platform": "bees",
         "session_id": session_id,
         "session_db": session_db,
         "enabled_toolsets": _resolve_toolsets(cfg),
@@ -1260,7 +1260,7 @@ def _create_agent(
 
 
 def _sync_session_identity(agent: Any, session_id: str) -> None:
-    """Refresh persisted Hermes session metadata when Minions switches models."""
+    """Refresh persisted Hermes session metadata when Bees switches models."""
     session_db = getattr(agent, "_session_db", None)
     model = _string_or_none(getattr(agent, "model", None))
     if not session_db or not session_id or not model:
@@ -1317,7 +1317,7 @@ def _sync_session_identity(agent: Any, session_id: str) -> None:
 
 def _warm_agent() -> None:
     _create_agent(
-        session_id="minions-healthcheck",
+        session_id="bees-healthcheck",
         requested_model=None,
         reasoning_effort=None,
     )
@@ -1418,7 +1418,7 @@ def _run_chat(request_id: str, request: dict[str, Any]) -> None:
 
         clear_session_vars = _clear_session_vars
         session_tokens = set_session_vars(
-            platform="minions",
+            platform="bees",
             chat_id=task_id,
             chat_name=task_title,
             session_key=session_id,
@@ -1511,7 +1511,7 @@ def _judge_completion(request: dict[str, Any]) -> dict[str, Any]:
         "- done=false for: questions, partial progress, clarification requests, errors, or ongoing work"
     )
 
-    session_id = f"minions-judge-{uuid.uuid4().hex[:8]}"
+    session_id = f"bees-judge-{uuid.uuid4().hex[:8]}"
 
     agent = _create_agent(
         session_id=session_id,

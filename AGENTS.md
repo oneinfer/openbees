@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## What This Is
 
-Minions is an autonomous task management system with a Kanban board UI. Users create tasks via a chat interface; each task is a Hermes agent session that autonomously decides how to execute — doing the work itself, spawning child sessions, or creating cron jobs. After each agent turn, a lightweight completion judge evaluates whether the task is done and moves it to review automatically. The user never talks to child sessions or cron jobs directly; the task agent manages its own sub-resources.
+Bees is an autonomous task management system with a Kanban board UI. Users create tasks via a chat interface; each task is a Hermes agent session that autonomously decides how to execute — doing the work itself, spawning child sessions, or creating cron jobs. After each agent turn, a lightweight completion judge evaluates whether the task is done and moves it to review automatically. The user never talks to child sessions or cron jobs directly; the task agent manages its own sub-resources.
 
 ## Prerequisites
 
@@ -50,8 +50,8 @@ Hermes AIAgent
 
 ### State directory
 
-All persistent state lives under `MINIONS_HOME` (default: `~/.minions/`):
-- `data/minions.db` — SQLite database
+All persistent state lives under `BEES_HOME` (default: `~/.bees/`):
+- `data/bees.db` — SQLite database
 - `logs/` — log files
 - `workspace/` — default working directory for Hermes task artifacts
 
@@ -62,12 +62,12 @@ All persistent state lives under `MINIONS_HOME` (default: `~/.minions/`):
 | Agent communication | Python subprocess + JSONL | Imports Hermes AIAgent directly — no HTTP gateway overhead, structured streaming events, per-task model/reasoning control |
 | Task execution | Autonomous agent session | Each task IS a Hermes session. The agent decides execution strategy (self, child session, cron job). Our backend doesn't manage sub-resources. |
 | Completion judge | Lightweight LLM call after each agent turn | After a chat stream completes, the server sends the response to a `judge.completion` worker request. A fast judge model evaluates whether the task looks done and auto-moves to `in_review`. No polling, no prompt pollution — the judge runs outside the conversation. |
-| Source of truth | Hermes SessionDB for chat history; Minions SQLite for task metadata; in-memory LiveChatRun for active streams | Hermes owns all transcripts and replay. Minions has no message table. `tasks.id` is the Hermes root session ID; Minions stores task metadata, per-task settings, and `last_agent_response_at`. During active streaming, `live-chat.ts` holds an in-memory `LiveChatRun` with accumulated messages. After streaming ends and the run TTL expires, chat history is projected from Hermes SessionDB on demand. |
+| Source of truth | Hermes SessionDB for chat history; Bees SQLite for task metadata; in-memory LiveChatRun for active streams | Hermes owns all transcripts and replay. Bees has no message table. `tasks.id` is the Hermes root session ID; Bees stores task metadata, per-task settings, and `last_agent_response_at`. During active streaming, `live-chat.ts` holds an in-memory `LiveChatRun` with accumulated messages. After streaming ends and the run TTL expires, chat history is projected from Hermes SessionDB on demand. |
 | Status ownership | Judge auto-moves to `in_review`; human moves everything else via drag-drop | Clean separation: judge evaluates completion, human controls all manual transitions. |
 
 ## Key Patterns
 
-- **Session lifecycle**: `tasks.id` is the Minions task ID and the Hermes root session ID. Chat and history reads all use `task.id`; Minions does not persist Hermes-returned child or continuation session IDs.
+- **Session lifecycle**: `tasks.id` is the Bees task ID and the Hermes root session ID. Chat and history reads all use `task.id`; Bees does not persist Hermes-returned child or continuation session IDs.
 - **Chat projection**: `GET /tasks/:id/messages` loads raw rows from Hermes `SessionDB.get_messages()` via the Python worker, which filters out tool-call-only turns and empty messages. The client shows optimistic messages during streaming and loads the projected history from Hermes on page load/task switch.
 - **Completion judge**: After each successful chat stream, `consumeChatRun()` fires a `judge.completion` request to the Python worker with the task title, description, and the agent's accumulated response text (truncated to ~4KB). The judge creates a throwaway AIAgent with `reasoning_effort=none`, evaluates the response, and returns `{done, reason}`. If `done=true` and the task is still `in_progress`, the server auto-moves it to `in_review` and broadcasts the update. Judge failures are non-critical — the task stays as-is.
 - **Agent defaults**: Global default model/reasoning settings are stored in the Python worker via `settings.set` and surfaced through `GET /api/agent/defaults`. The Settings page lets users pick the default model (two-panel picker with search) and reasoning effort for all new tasks. Agent settings routes live in `server/routes/agent.ts`.
@@ -76,8 +76,8 @@ All persistent state lives under `MINIONS_HOME` (default: `~/.minions/`):
 - **Live-chat state** (`server/live-chat.ts`): In-memory `Map<taskId, LiveChatRun>` accumulates streaming events into structured messages (user + assistant with tools/thinking/usage). This is ephemeral — on server restart, active run state is lost, but the Hermes session history remains in SessionDB.
 - **SSE board events**: `/api/events` broadcasts board-level events (task CRUD) to all clients. Separate from per-task live chat SSE.
 - **Disconnect resilience**: If the browser disconnects during a stream, the server continues draining the worker stream to completion. On successful completion, `last_agent_response_at` is recorded for the task.
-- **Cron jobs**: Hermes manages cron job state internally. Minions exposes endpoints to list, pause, resume, trigger, and remove jobs. Cron jobs link back to their originating task via `origin.platform === 'minions'`.
-- **File browser**: `server/routes/files.ts` exposes CRUD operations on the `MINIONS_HOME/workspace/` directory (list, read, write, create, rename, delete, upload via multer). The client's `FileBrowserPage` provides a full file manager UI.
+- **Cron jobs**: Hermes manages cron job state internally. Bees exposes endpoints to list, pause, resume, trigger, and remove jobs. Cron jobs link back to their originating task via `origin.platform === 'bees'`.
+- **File browser**: `server/routes/files.ts` exposes CRUD operations on the `BEES_HOME/workspace/` directory (list, read, write, create, rename, delete, upload via multer). The client's `FileBrowserPage` provides a full file manager UI.
 - **Skills catalog**: `server/skills/catalog.ts` discovers bundled skill definitions. Exposed via `server/routes/skills.ts` and rendered in the client's `SkillsPage`.
 - **Server imports**: Use `.js` extensions in import paths (ESM with tsx).
 
@@ -186,9 +186,9 @@ PORT=6969                        # Web server port
 HERMES_PYTHON=                   # Path to Python with Hermes deps (auto-detected if unset)
 HERMES_AGENT_DIR=                # Path to Hermes agent dir (default: ~/.hermes/hermes-agent)
 HERMES_AGENT_RUN_LIMIT=10        # Max concurrent agent runs in Python worker (chat + judge)
-MINIONS_HOME=~/.minions          # State directory (DB, logs, backups, workspace)
-DB_PATH=~/.minions/data/minions.db  # SQLite database path
-MINIONS_MODEL_LIST_CACHE_TTL_SECONDS=60  # Cache TTL for model list in Python worker
+BEES_HOME=~/.bees          # State directory (DB, logs, backups, workspace)
+DB_PATH=~/.bees/data/bees.db  # SQLite database path
+BEES_MODEL_LIST_CACHE_TTL_SECONDS=60  # Cache TTL for model list in Python worker
 ```
 
 ## Hermes Python Library

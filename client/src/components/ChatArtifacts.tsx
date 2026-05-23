@@ -21,7 +21,7 @@ const FILE_LIKE_EXTENSION_PATTERN = /\.[A-Za-z0-9][A-Za-z0-9_.-]{0,15}$/;
 const SPREADSHEET_EXTENSIONS = new Set(['.xlsx', '.xls', '.xlsm', '.csv', '.ods']);
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
 const ARCHIVE_EXTENSIONS = new Set(['.zip', '.7z', '.rar', '.tar', '.gz']);
-const DEFAULT_WORKSPACE_PATH = '~/.minions/workspace';
+const DEFAULT_WORKSPACE_PATH = '~/.bees/workspace';
 const WINDOWS_POSIX_DRIVE_PATH = /^\/([A-Za-z])(?:\/|$)/;
 
 function normalizeWindowsPosixPath(path: string): string {

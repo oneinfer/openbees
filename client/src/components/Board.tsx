@@ -253,8 +253,8 @@ export function Board() {
           title={`Delete ${deleteAllCount} ${deleteAllLabel} ${deleteAllTaskWord}?`}
           body={
             deleteAllCount === 1
-              ? `This removes the task in ${deleteAllLabel} from Minions. The Hermes session history remains in Hermes.`
-              : `This removes every task in ${deleteAllLabel} from Minions. Hermes session histories remain in Hermes.`
+              ? `This removes the task in ${deleteAllLabel} from Bees. The Hermes session history remains in Hermes.`
+              : `This removes every task in ${deleteAllLabel} from Bees. Hermes session histories remain in Hermes.`
           }
           confirmLabel={deleteAllCount === 1 ? 'Delete task' : `Delete ${deleteAllCount} tasks`}
           isConfirming={isBulkDeleting}

@@ -110,7 +110,7 @@ export function ProjectsPage() {
   const deleteProjectModal = projectToDelete ? (
     <DeleteConfirmModal
       title={`Delete ${projectToDelete.label}?`}
-      body={`This removes the project and ${projectToDelete.taskCount} Minions task${projectToDelete.taskCount === 1 ? '' : 's'} from Minions. Files in the folder stay on disk.`}
+      body={`This removes the project and ${projectToDelete.taskCount} Bees task${projectToDelete.taskCount === 1 ? '' : 's'} from Bees. Files in the folder stay on disk.`}
       confirmLabel="Delete project"
       isConfirming={isDeletingProject}
       error={projectError}

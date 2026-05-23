@@ -230,7 +230,7 @@ export function fetchSkillContent(id: string) {
   return request<{ skill: SkillMeta; content: string }>(`/skills/${encodeURIComponent(id)}/content`);
 }
 
-export function listFiles(path = '~/.minions/workspace') {
+export function listFiles(path = '~/.bees/workspace') {
   return request<FileListResponse>(`/files/list?path=${encodeURIComponent(path)}`);
 }
 

@@ -55,7 +55,7 @@ const RUNTIME_DEFINITIONS: RuntimeDefinition[] = [
     id: 'codex',
     label: 'Codex',
     description: 'Use the Codex CLI in the selected repo with optional model and reasoning effort overrides.',
-    envCommand: process.env.MINIONS_CODEX_COMMAND?.trim() || 'codex',
+    envCommand: process.env.BEES_CODEX_COMMAND?.trim() || 'codex',
     modelControl: 'picker',
     reasoningControl: 'picker',
   },
@@ -63,7 +63,7 @@ const RUNTIME_DEFINITIONS: RuntimeDefinition[] = [
     id: 'claude_code',
     label: 'Claude Code',
     description: 'Use the Claude Code CLI in the selected repo with optional model and effort overrides.',
-    envCommand: process.env.MINIONS_CLAUDE_CODE_COMMAND?.trim() || 'claude',
+    envCommand: process.env.BEES_CLAUDE_CODE_COMMAND?.trim() || 'claude',
     modelControl: 'picker',
     reasoningControl: 'picker',
   },
@@ -71,7 +71,7 @@ const RUNTIME_DEFINITIONS: RuntimeDefinition[] = [
     id: 'opencode',
     label: 'OpenCode',
     description: 'Use the OpenCode CLI in the selected repo with an optional model id override.',
-    envCommand: process.env.MINIONS_OPENCODE_COMMAND?.trim() || 'opencode',
+    envCommand: process.env.BEES_OPENCODE_COMMAND?.trim() || 'opencode',
     modelControl: 'picker',
     reasoningControl: 'none',
   },
@@ -164,7 +164,7 @@ export function runtimeInstaller(runtime: AgentRuntime): RuntimeInstaller | null
 export function defaultRuntime(): AgentRuntime {
   const stored = getAppSetting(DEFAULT_RUNTIME_SETTING_KEY);
   if (isAgentRuntime(stored)) return stored;
-  const envDefault = process.env.MINIONS_DEFAULT_RUNTIME?.trim() ?? null;
+  const envDefault = process.env.BEES_DEFAULT_RUNTIME?.trim() ?? null;
   if (isAgentRuntime(envDefault)) return envDefault;
   return 'hermes';
 }
