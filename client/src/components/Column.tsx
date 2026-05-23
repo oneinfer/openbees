@@ -1,5 +1,5 @@
 import { useDroppable } from '@dnd-kit/core';
-import { Loader2, MoreHorizontal, Play, Plus } from 'lucide-react';
+import { GitPullRequest, Loader2, MoreHorizontal, Play, Plus } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Task, TaskStatus } from '@shared/types';
@@ -16,6 +16,8 @@ interface ColumnProps {
   onRequestDeleteAll: (status: TaskStatus) => void;
   onFlushPending: () => void;
   isFlushingPending: boolean;
+  onCreatePullRequestWithAi: () => void;
+  isCreatingPullRequestTask: boolean;
 }
 
 export function Column({
@@ -26,6 +28,8 @@ export function Column({
   onRequestDeleteAll,
   onFlushPending,
   isFlushingPending,
+  onCreatePullRequestWithAi,
+  isCreatingPullRequestTask,
 }: ColumnProps) {
   const { label } = STATUS_META[status];
   const { setNodeRef, isOver } = useDroppable({ id: status });
@@ -33,6 +37,7 @@ export function Column({
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const showAddButton = status === 'pending';
   const showFlushButton = status === 'pending';
+  const showPullRequestButton = status === 'in_review';
 
   const openMenu = useCallback((button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect();
@@ -66,6 +71,23 @@ export function Column({
                 <Play size={13} fill="currentColor" strokeWidth={2.5} />
               )}
               Flush
+            </button>
+          )}
+          {showPullRequestButton && (
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={onCreatePullRequestWithAi}
+              disabled={tasks.length === 0 || isCreatingPullRequestTask}
+              aria-label="Create pull request with AI"
+              title="Create pull request with AI"
+              className="h-6 w-6 inline-flex items-center justify-center rounded-md text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-zinc-500 dark:disabled:hover:text-zinc-400"
+            >
+              {isCreatingPullRequestTask ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <GitPullRequest size={16} strokeWidth={2.4} />
+              )}
             </button>
           )}
           <button

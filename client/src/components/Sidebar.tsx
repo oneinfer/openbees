@@ -14,12 +14,14 @@ import {
   ChevronRight,
   Loader2,
   MessageSquare,
+  Plus,
 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { isEditableTarget } from '../lib/keyboard';
 import { groupTasksByProject, normalizeProjectPath, projectHref } from '../lib/projects';
-import { timeAgo } from '../lib/format';
+import { timeAgo, toErrorMessage } from '../lib/format';
 import { isChatTask } from '../lib/taskState';
+import { createProject, pickWorkspaceDirectory } from '../lib/api';
 
 const isMac = /Mac/.test(navigator.userAgent);
 const PROJECT_EXPANSION_STORAGE_KEY = 'sidebarExpandedProjects';
@@ -43,12 +45,15 @@ export function Sidebar() {
   const projects = useStore((s) => s.projects);
   const tasks = useStore((s) => s.tasks);
   const streamingTaskIds = useStore((s) => s.streamingTaskIds);
+  const upsertProject = useStore((s) => s.upsertProject);
   const projectGroups = useMemo(() => groupTasksByProject(tasks, streamingTaskIds, projects), [projects, tasks, streamingTaskIds]);
   const recentChats = useMemo(
     () => tasks.filter(isChatTask).sort((a, b) => b.updated_at - a.updated_at).slice(0, 6),
     [tasks],
   );
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set(readExpandedProjects()));
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [projectError, setProjectError] = useState<string | null>(null);
 
   const activeTask = useMemo(() => {
     const match = location.pathname.match(/^\/tasks\/([^/]+)$/);
@@ -132,6 +137,23 @@ export function Sidebar() {
       localStorage.setItem(PROJECT_EXPANSION_STORAGE_KEY, JSON.stringify([...next]));
       return next;
     });
+  };
+
+  const handleNewProject = async () => {
+    if (isCreatingProject) return;
+    setIsCreatingProject(true);
+    setProjectError(null);
+    try {
+      const picked = await pickWorkspaceDirectory(null);
+      if (!picked.path) return;
+      const result = await createProject(picked.path);
+      upsertProject(result.project);
+      navigate(projectHref(result.project.path));
+    } catch (error) {
+      setProjectError(toErrorMessage(error, 'Failed to create project'));
+    } finally {
+      setIsCreatingProject(false);
+    }
   };
 
   return (
@@ -284,13 +306,28 @@ export function Sidebar() {
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-400 dark:text-zinc-500">
                 Projects
               </span>
-              <span className="rounded-full bg-zinc-200/70 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-                {projectGroups.length}
-              </span>
+              <div className="flex items-center gap-1">
+                <span className="rounded-full bg-zinc-200/70 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  {projectGroups.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleNewProject}
+                  disabled={isCreatingProject}
+                  title="New project"
+                  aria-label="New project"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-zinc-200/80 hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                >
+                  {isCreatingProject ? <Loader2 size={13} className="animate-spin" /> : <Plus size={14} />}
+                </button>
+              </div>
             </div>
+            {projectError && (
+              <p className="mb-2 px-2 text-xs text-red-500 dark:text-red-400">{projectError}</p>
+            )}
             {projectGroups.length === 0 ? (
               <div className="rounded-xl border border-dashed border-zinc-200 bg-white/60 px-3 py-3 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
-                Create a project from the Projects page and it will show up here.
+                Create a project and it will show up here.
               </div>
             ) : (
               <div className="space-y-2">

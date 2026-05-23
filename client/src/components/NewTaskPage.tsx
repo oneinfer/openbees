@@ -107,7 +107,7 @@ export function NewTaskPage() {
   }, [isCreating]);
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-end px-6 pb-16">
+    <div className="flex-1 flex flex-col items-center justify-center px-6 py-8">
       <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100 mb-6">
         What do you need done?
       </h1>

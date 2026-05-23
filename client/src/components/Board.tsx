@@ -9,11 +9,13 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core';
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { Task, TaskStatus } from '@shared/types';
 import { TASK_STATUSES } from '@shared/types';
 import { STATUS_META } from '../lib/constants';
 import { useStore, optimisticMoveTask } from '../lib/store';
-import { deleteTask, moveTask } from '../lib/api';
+import { createTask, deleteTask, moveTask } from '../lib/api';
+import { toErrorMessage } from '../lib/format';
 import { isBoardTask } from '../lib/taskState';
 import { Column } from './Column';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
@@ -25,6 +27,7 @@ const dropAnimation = {
 };
 
 export function Board() {
+  const navigate = useNavigate();
   const tasks = useStore((s) => s.tasks);
   const streamingTaskIds = useStore((s) => s.streamingTaskIds);
   const upsertTask = useStore((s) => s.upsertTask);
@@ -43,6 +46,8 @@ export function Board() {
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [isFlushingPending, setIsFlushingPending] = useState(false);
   const [flushPendingError, setFlushPendingError] = useState<string | null>(null);
+  const [isCreatingPullRequestTask, setIsCreatingPullRequestTask] = useState(false);
+  const [pullRequestError, setPullRequestError] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -92,6 +97,64 @@ export function Board() {
       }
     } finally {
       setIsFlushingPending(false);
+    }
+  }
+
+  async function handleCreatePullRequestWithAi() {
+    if (isCreatingPullRequestTask) return;
+
+    const targets = grouped.in_review;
+    if (targets.length === 0) return;
+
+    const workspacePaths = Array.from(
+      new Set(targets.map((task) => task.workspace_path).filter((path): path is string => Boolean(path))),
+    );
+    const workspacePath = workspacePaths.length === 1 ? workspacePaths[0] : null;
+    const taskList = targets
+      .map((task) => {
+        const details = [
+          `id: ${task.id}`,
+          task.workspace_path ? `workspace: ${task.workspace_path}` : null,
+          task.description ? `notes: ${task.description}` : null,
+        ].filter(Boolean).join('; ');
+        return `- ${task.title}${details ? ` (${details})` : ''}`;
+      })
+      .join('\n');
+
+    const description = [
+      'Create a pull request for the work represented by the Ready for review tasks below.',
+      '',
+      'Inspect the repository state, review the relevant changes, run the appropriate verification, create a clear commit if needed, push the branch, and open a pull request with a concise title and description. Report the PR link and any verification results when finished.',
+      workspacePaths.length > 1
+        ? `Multiple workspaces are represented: ${workspacePaths.join(', ')}. Choose the correct repository for the pull request and explain the choice.`
+        : null,
+      '',
+      'Ready for review tasks:',
+      taskList,
+    ].filter((line): line is string => line !== null).join('\n');
+
+    setIsCreatingPullRequestTask(true);
+    setPullRequestError(null);
+    try {
+      const created = await createTask(
+        description,
+        'Create pull request',
+        workspacePath,
+        undefined,
+        undefined,
+        undefined,
+        'direct',
+        undefined,
+        'task',
+      );
+      upsertTask(created.task);
+      const activated = await moveTask(created.task.id, 'in_progress');
+      upsertTask(activated.task);
+      navigate(`/tasks/${activated.task.id}`);
+    } catch (error) {
+      setPullRequestError(toErrorMessage(error, 'Failed to create pull request task'));
+    } finally {
+      setIsCreatingPullRequestTask(false);
     }
   }
 
@@ -162,12 +225,19 @@ export function Board() {
             onRequestDeleteAll={handleRequestDeleteAll}
             onFlushPending={handleFlushPending}
             isFlushingPending={isFlushingPending}
+            onCreatePullRequestWithAi={handleCreatePullRequestWithAi}
+            isCreatingPullRequestTask={isCreatingPullRequestTask}
           />
         ))}
       </div>
       {flushPendingError && (
         <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 shadow-lg dark:border-red-900/70 dark:bg-red-950 dark:text-red-300">
           {flushPendingError}
+        </div>
+      )}
+      {pullRequestError && (
+        <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 shadow-lg dark:border-red-900/70 dark:bg-red-950 dark:text-red-300">
+          {pullRequestError}
         </div>
       )}
       <DragOverlay dropAnimation={dropAnimation}>
