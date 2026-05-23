@@ -97,7 +97,9 @@ function parseMessageAttachments(content: string): ChatAttachment[] {
     const path = text('absolute_path');
     const name = text('name') || path.split(/[\\/]/).pop() || 'attachment';
     const size = Number(text('size_bytes'));
-    const kind = element.getAttribute('kind') === 'image' || mimeType.startsWith('image/') ? 'image' : 'file';
+    const kind: ChatAttachment['kind'] = element.getAttribute('kind') === 'image' || mimeType.startsWith('image/')
+      ? 'image'
+      : 'file';
 
     return {
       id: `${path || name}-${index}`,
@@ -262,7 +264,8 @@ export function TaskChat({
   const toolbarDefaults = waitingForTaskSettings ? null : defaults;
   const configPending = waitingForTaskSettings || (!defaults && isLoading);
   const isPendingTask = taskStatus === 'pending';
-  const inputDisabled = isPendingTask || isStreaming || configPending;
+  const composerControlsDisabled = isPendingTask || configPending;
+  const sendDisabled = composerControlsDisabled || isStreaming;
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const didInitialScrollRef = useRef(false);
@@ -303,7 +306,7 @@ export function TaskChat({
   const handleSubmit = useCallback(async () => {
     const text = input.trim();
     const files = attachments.map((attachment) => attachment.file);
-    if ((!text && files.length === 0) || inputDisabled) return;
+    if ((!text && files.length === 0) || sendDisabled) return;
     const messageText = text || (files.length === 1 ? 'Attached file.' : 'Attached files.');
     setInput('');
     setAttachments([]);
@@ -311,7 +314,7 @@ export function TaskChat({
       if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
     }
     await sendMessage(taskId, messageText, { runtime, model, reasoningEffort }, files);
-  }, [attachments, input, inputDisabled, taskId, sendMessage, runtime, model, reasoningEffort]);
+  }, [attachments, input, sendDisabled, taskId, sendMessage, runtime, model, reasoningEffort]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => handleChatKeyDown(e, handleSubmit),
@@ -319,14 +322,14 @@ export function TaskChat({
   );
 
   const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (inputDisabled) return;
+    if (composerControlsDisabled) return;
 
     const pastedAttachments = composerAttachmentsFromClipboard(event);
     if (pastedAttachments.length === 0) return;
 
     if (!event.clipboardData.getData('text/plain')) event.preventDefault();
     setAttachments((current) => [...current, ...pastedAttachments]);
-  }, [inputDisabled]);
+  }, [composerControlsDisabled]);
 
   return (
     <div className="flex w-full flex-1 min-h-0">
@@ -416,7 +419,7 @@ export function TaskChat({
         <div className={`${CHAT_COLUMN_CLASS} rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800`}>
           <AttachmentPreviewList
             attachments={attachments}
-            disabled={inputDisabled}
+            disabled={composerControlsDisabled}
             onChange={setAttachments}
           />
           <textarea
@@ -434,7 +437,7 @@ export function TaskChat({
             <div className="flex min-w-0 items-center gap-2 flex-wrap">
               <AttachmentPicker
                 attachments={attachments}
-                disabled={inputDisabled}
+                disabled={composerControlsDisabled}
                 onChange={setAttachments}
               />
               <InputToolbar
@@ -445,7 +448,7 @@ export function TaskChat({
                 runtimeDefaultModel={runtimeDefaultModel}
                 runtimeOptions={runtimeOptions}
                 modelGroups={modelGroups}
-                disabled={inputDisabled}
+                disabled={composerControlsDisabled}
                 onRuntimeChange={setRuntime}
                 onModelChange={setModel}
                 onReasoningEffortChange={setReasoningEffort}
@@ -455,7 +458,7 @@ export function TaskChat({
               {context && <ContextRing context={context} />}
               <button
                 onClick={handleSubmit}
-                disabled={(!input.trim() && attachments.length === 0) || inputDisabled}
+                disabled={(!input.trim() && attachments.length === 0) || sendDisabled}
                 className="p-2 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 disabled:opacity-30 hover:bg-zinc-700 dark:hover:bg-zinc-300 transition-colors"
               >
                 <ArrowUp size={14} />

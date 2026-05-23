@@ -1,8 +1,6 @@
 import { TASK_STATUSES, type Project, type Task, type TaskStatus } from '@shared/types';
 import { isBoardTask } from './taskState';
 
-const NO_PROJECT_KEY = '__no_project__';
-
 export interface ProjectGroup {
   key: string;
   path: string | null;
@@ -60,7 +58,9 @@ export function groupTasksByProject(tasks: Task[], streamingTaskIds?: ReadonlySe
 
   for (const task of tasks.filter(isBoardTask)) {
     const path = normalizeProjectPath(task.workspace_path);
-    const key = path ?? NO_PROJECT_KEY;
+    if (!path) continue;
+
+    const key = path;
     const existing = groups.get(key);
 
     if (existing) {
