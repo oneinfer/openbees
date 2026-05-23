@@ -23,7 +23,7 @@ export function NewTaskPage() {
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [workspacePath, setWorkspacePath] = useState(() => {
     if (requestedWorkspacePath) return requestedWorkspacePath;
-    return localStorage.getItem('minions:lastWorkspacePath') ?? '';
+    return localStorage.getItem('bees:lastWorkspacePath') ?? '';
   });
   const [planModeEnabled, setPlanModeEnabled] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -71,8 +71,8 @@ export function NewTaskPage() {
       const task = requestedStatus === 'in_progress'
         ? (await moveTask(created.task.id, 'in_progress')).task
         : created.task;
-      if (normalizedWorkspacePath) localStorage.setItem('minions:lastWorkspacePath', normalizedWorkspacePath);
-      else localStorage.removeItem('minions:lastWorkspacePath');
+      if (normalizedWorkspacePath) localStorage.setItem('bees:lastWorkspacePath', normalizedWorkspacePath);
+      else localStorage.removeItem('bees:lastWorkspacePath');
       if (requestedStatus === 'in_progress') navigate(`/tasks/${task.id}`);
       else navigate(normalizedWorkspacePath ? projectHref(normalizedWorkspacePath) : '/');
     } catch (error) {
