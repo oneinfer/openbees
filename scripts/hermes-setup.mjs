@@ -160,7 +160,7 @@ function windowsUserProfileCandidates() {
 }
 
 function fullScanRoots() {
-  const configured = process.env.MINIONS_HERMES_SCAN_ROOTS?.trim();
+  const configured = process.env.BEES_HERMES_SCAN_ROOTS?.trim();
   if (configured) return configured.split(isWindows() ? ';' : ':').map((value) => value.trim()).filter(Boolean);
 
   if (isWindows()) {
@@ -246,8 +246,8 @@ function discoverHermes({ fullScan = false } = {}) {
 }
 
 function installHermes() {
-  if (process.env.MINIONS_SKIP_HERMES_INSTALL === '1') {
-    console.warn('[hermes-setup] Hermes install skipped because MINIONS_SKIP_HERMES_INSTALL=1.');
+  if (process.env.BEES_SKIP_HERMES_INSTALL === '1') {
+    console.warn('[hermes-setup] Hermes install skipped because BEES_SKIP_HERMES_INSTALL=1.');
     return false;
   }
 
@@ -325,7 +325,7 @@ function ensureProjectEnvFiles(discovery, { writeLocalEnv = true, writeExampleEn
 export function ensureHermesEnvironment(options = {}) {
   const {
     installIfMissing = true,
-    fullScan = process.env.MINIONS_HERMES_FULL_SCAN === '1',
+    fullScan = process.env.BEES_HERMES_FULL_SCAN === '1',
     writeLocalEnv = true,
     writeExampleEnv = true,
   } = options;
@@ -361,7 +361,7 @@ async function main() {
   const args = new Set(process.argv.slice(2));
   ensureHermesEnvironment({
     installIfMissing: !args.has('--no-install'),
-    fullScan: args.has('--full-scan') || process.env.MINIONS_HERMES_FULL_SCAN === '1',
+    fullScan: args.has('--full-scan') || process.env.BEES_HERMES_FULL_SCAN === '1',
     writeLocalEnv: !args.has('--no-env'),
     writeExampleEnv: !args.has('--no-env-example'),
   });

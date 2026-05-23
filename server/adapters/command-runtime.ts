@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { AgentModelsResponse, AgentModelOption, AgentRuntime, SessionMetadata, TaskMessage } from '../../shared/types.js';
 import type { AgentAdapter, AgentRunOptions, StreamEvent } from './types.js';
-import { resolveMinionsWorkspaceDir } from '../paths.js';
+import { resolveBeesWorkspaceDir } from '../paths.js';
 
 function createAsyncQueue<T>() {
   const values: T[] = [];
@@ -45,7 +45,7 @@ function createAsyncQueue<T>() {
 }
 
 async function writeTaskFiles(runtime: AgentRuntime, sessionId: string, message: string, options?: AgentRunOptions) {
-  const dir = join(tmpdir(), 'minions-runtime-prompts', runtime, sessionId);
+  const dir = join(tmpdir(), 'bees-runtime-prompts', runtime, sessionId);
   await mkdir(dir, { recursive: true });
 
   const promptFile = join(dir, 'prompt.txt');
@@ -318,7 +318,7 @@ async function discoverCodexModels(command: string): Promise<AgentModelsResponse
       executable,
       ['debug', 'models'],
       { ...process.env, NO_COLOR: '1', TERM: 'dumb' },
-      resolveMinionsWorkspaceDir(),
+      resolveBeesWorkspaceDir(),
     );
 
     if (result.code === 0 && result.stdout.trim()) {
@@ -434,7 +434,7 @@ async function discoverOpenCodeModels(command: string): Promise<AgentModelsRespo
     return { runtime: 'opencode', defaultModel: null, activeProvider: 'opencode', groups: [] };
   }
 
-  const dir = join(tmpdir(), 'minions-runtime-models', 'opencode', randomUUID());
+  const dir = join(tmpdir(), 'bees-runtime-models', 'opencode', randomUUID());
   const xdgConfigHome = join(dir, 'config');
   const xdgDataHome = join(dir, 'data');
   await mkdir(xdgConfigHome, { recursive: true });
@@ -451,7 +451,7 @@ async function discoverOpenCodeModels(command: string): Promise<AgentModelsRespo
         XDG_CONFIG_HOME: xdgConfigHome,
         XDG_DATA_HOME: xdgDataHome,
       },
-      resolveMinionsWorkspaceDir(),
+      resolveBeesWorkspaceDir(),
     );
 
     if (result.code !== 0) {
@@ -508,7 +508,7 @@ export class CommandRuntimeAdapter implements AgentAdapter {
     if (!this.command.trim()) {
       yield {
         type: 'error',
-        error: `${this.runtime} runtime is not configured. Set the corresponding MINIONS_*_COMMAND environment variable.`,
+        error: `${this.runtime} runtime is not configured. Set the corresponding BEES_*_COMMAND environment variable.`,
         code: 'runtime_not_configured',
       };
       yield { type: 'done', sessionId };
@@ -516,7 +516,7 @@ export class CommandRuntimeAdapter implements AgentAdapter {
     }
 
     const queue = createAsyncQueue<StreamEvent>();
-    const cwd = options?.task?.workspacePath ?? resolveMinionsWorkspaceDir();
+    const cwd = options?.task?.workspacePath ?? resolveBeesWorkspaceDir();
     const startedAt = Date.now();
 
     void (async () => {
@@ -549,14 +549,14 @@ export class CommandRuntimeAdapter implements AgentAdapter {
           ...process.env,
           TERM: 'dumb',
           NO_COLOR: '1',
-          MINIONS_RUNTIME: this.runtime,
-          MINIONS_TASK_ID: options?.task?.id ?? sessionId,
-          MINIONS_TASK_TITLE: options?.task?.title ?? '',
-          MINIONS_TASK_REPO: options?.task?.workspacePath ?? '',
-          MINIONS_TASK_MESSAGE: message,
-          MINIONS_TASK_SYSTEM_PROMPT: options?.systemMessage ?? '',
-          MINIONS_TASK_PROMPT_FILE: files.promptFile,
-          MINIONS_TASK_CONTEXT_FILE: files.contextFile,
+          BEES_RUNTIME: this.runtime,
+          BEES_TASK_ID: options?.task?.id ?? sessionId,
+          BEES_TASK_TITLE: options?.task?.title ?? '',
+          BEES_TASK_REPO: options?.task?.workspacePath ?? '',
+          BEES_TASK_MESSAGE: message,
+          BEES_TASK_SYSTEM_PROMPT: options?.systemMessage ?? '',
+          BEES_TASK_PROMPT_FILE: files.promptFile,
+          BEES_TASK_CONTEXT_FILE: files.contextFile,
           XDG_CONFIG_HOME: this.runtime === 'opencode' ? xdgConfigHome : process.env.XDG_CONFIG_HOME,
           XDG_DATA_HOME: this.runtime === 'opencode' ? xdgDataHome : process.env.XDG_DATA_HOME,
         },

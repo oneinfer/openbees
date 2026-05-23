@@ -19,7 +19,7 @@ import { toErrorMessage } from '../lib/format';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 
 const CHAT_COLUMN_CLASS = 'w-full max-w-[760px] mx-auto';
-const CHAT_WORKSPACE_STORAGE_KEY = 'minions:lastChatWorkspacePath';
+const CHAT_WORKSPACE_STORAGE_KEY = 'bees:lastChatWorkspacePath';
 
 function NewChatComposer() {
   const navigate = useNavigate();
@@ -358,7 +358,7 @@ function ExistingChatPage({ chatId }: { chatId: string }) {
       {showDeleteConfirm && (
         <DeleteConfirmModal
           title="Delete chat"
-          body="This removes the chat from Minions. The Hermes session history remains in Hermes."
+          body="This removes the chat from Bees. The Hermes session history remains in Hermes."
           confirmLabel="Delete chat"
           isConfirming={isDeleting}
           error={deleteError}

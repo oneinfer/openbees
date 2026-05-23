@@ -27,7 +27,7 @@ import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { MarkdownContent } from './MarkdownContent';
 import type { CronJob, CronRun } from '@shared/types';
 
-const DEFAULT_PAUSE_REASON = 'Paused from Minions';
+const DEFAULT_PAUSE_REASON = 'Paused from Bees';
 
 interface PendingAction {
   action: 'pause' | 'resume' | 'run' | 'delete';

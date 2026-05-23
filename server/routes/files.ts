@@ -47,8 +47,8 @@ const HOME = resolve(homedir());
 const TEXT_SAMPLE_BYTES = 8192;
 const MAX_TEXT_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_SIZE_DISPLAY = '10 MiB';
-const DEFAULT_FILE_BROWSER_PATH = '~/.minions/workspace';
-const UPLOAD_TMP_DIR = join(tmpdir(), 'minions-uploads');
+const DEFAULT_FILE_BROWSER_PATH = '~/.bees/workspace';
+const UPLOAD_TMP_DIR = join(tmpdir(), 'bees-uploads');
 
 mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
 

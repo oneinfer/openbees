@@ -412,10 +412,10 @@
 <body>
   <div class="page">
     <header>
-      <div class="eyebrow">Minions design plan</div>
+      <div class="eyebrow">Bees design plan</div>
       <h1>File support for <code>TaskChat.tsx</code></h1>
       <p class="lead">
-        Let users attach local files to a task chat turn, upload them into the Minions workspace,
+        Let users attach local files to a task chat turn, upload them into the Bees workspace,
         and pass reliable file paths to the Hermes agent while preserving streaming chat and projected history.
       </p>
         <div class="meta">
@@ -439,7 +439,7 @@
           </p>
         </div>
         <p class="muted">
-          This keeps the current SSE streaming model intact and avoids introducing a Minions-owned
+          This keeps the current SSE streaming model intact and avoids introducing a Bees-owned
           message table. Hermes can remain the source of truth for transcript history. Hermes WebUI
           uses the same broad shape: queue files in the composer, upload before chat start, send
           attachment metadata with the chat request, and keep attachment metadata out of provider
@@ -488,11 +488,11 @@
           <div class="card span-6">
             <h3>Patterns not to copy directly</h3>
             <ul>
-              <li>Hermes WebUI hand-parses multipart because it uses Python's standard HTTP server. Minions already uses Express and Multer, so keep Multer.</li>
-              <li>Hermes WebUI stores only attachment filenames for display. Minions should keep structured metadata with absolute <code>path</code>, <code>displayPath</code>, <code>size</code>, and <code>mimeType</code>.</li>
-              <li>Hermes WebUI writes uploads into the session workspace root. Minions should use a task-scoped attachment directory to avoid name collisions and workspace clutter.</li>
-              <li>Hermes WebUI appends <code>[Attached files: ...]</code> into message text. Minions should prefer a parseable sentinel block so projected history can remove metadata cleanly.</li>
-              <li>Hermes WebUI has <code>api/file/raw</code> for persisted image previews. Minions currently only has <code>/api/files/download</code>, so image history thumbnails need a raw/preview endpoint or should stay as file badges for MVP.</li>
+              <li>Hermes WebUI hand-parses multipart because it uses Python's standard HTTP server. Bees already uses Express and Multer, so keep Multer.</li>
+              <li>Hermes WebUI stores only attachment filenames for display. Bees should keep structured metadata with absolute <code>path</code>, <code>displayPath</code>, <code>size</code>, and <code>mimeType</code>.</li>
+              <li>Hermes WebUI writes uploads into the session workspace root. Bees should use a task-scoped attachment directory to avoid name collisions and workspace clutter.</li>
+              <li>Hermes WebUI appends <code>[Attached files: ...]</code> into message text. Bees should prefer a parseable sentinel block so projected history can remove metadata cleanly.</li>
+              <li>Hermes WebUI has <code>api/file/raw</code> for persisted image previews. Bees currently only has <code>/api/files/download</code>, so image history thumbnails need a raw/preview endpoint or should stay as file badges for MVP.</li>
             </ul>
           </div>
         </div>
@@ -627,8 +627,8 @@ Content-Type: application/json
     {
       "id": "att_...",
       "name": "notes.txt",
-      "path": "/Users/.../.minions/workspace/tasks/&lt;taskId&gt;/attachments/&lt;turnId&gt;/notes.txt",
-      "displayPath": "~/.minions/workspace/tasks/&lt;taskId&gt;/attachments/&lt;turnId&gt;/notes.txt",
+      "path": "/Users/.../.bees/workspace/tasks/&lt;taskId&gt;/attachments/&lt;turnId&gt;/notes.txt",
+      "displayPath": "~/.bees/workspace/tasks/&lt;taskId&gt;/attachments/&lt;turnId&gt;/notes.txt",
       "size": 18422,
       "mimeType": "text/plain"
     }
@@ -649,12 +649,12 @@ Content-Type: application/json
             <h3>New upload route</h3>
             <p>
               Add <code>POST /api/tasks/:id/attachments</code>. It should verify the task exists,
-              create a directory under the Minions workspace, save files there, and return
+              create a directory under the Bees workspace, save files there, and return
               <code>TaskAttachment</code> metadata.
             </p>
             <p>
               Recommended storage path:
-              <code>~/.minions/workspace/tasks/&lt;taskId&gt;/attachments/&lt;timestamp-runId&gt;/&lt;filename&gt;</code>.
+              <code>~/.bees/workspace/tasks/&lt;taskId&gt;/attachments/&lt;timestamp-runId&gt;/&lt;filename&gt;</code>.
             </p>
           </div>
           <div class="card span-6">
@@ -678,7 +678,7 @@ void consumeChatRun(runTask, sessionId, agentContent, run.runId);</code></pre>
               but the worker should pass only provider-safe message fields into model history.
             </p>
             <p>
-              Minions already relies on Hermes SessionDB projection, so the cleanest adaptation is:
+              Bees already relies on Hermes SessionDB projection, so the cleanest adaptation is:
               persist the agent-facing sentinel block in Hermes, parse it during projection, return
               structured attachment metadata to the client, and keep raw attachment JSON out of the
               visible chat UI.
@@ -692,17 +692,17 @@ void consumeChatRun(runTask, sessionId, agentContent, run.runId);</code></pre>
             </p>
             <pre><code>Please summarize these files.
 
-&lt;minions_attachments&gt;
+&lt;bees_attachments&gt;
 [
   {
     "name": "notes.txt",
-    "path": "/Users/.../.minions/workspace/tasks/task-123/attachments/turn-456/notes.txt",
-    "displayPath": "~/.minions/workspace/tasks/task-123/attachments/turn-456/notes.txt",
+    "path": "/Users/.../.bees/workspace/tasks/task-123/attachments/turn-456/notes.txt",
+    "displayPath": "~/.bees/workspace/tasks/task-123/attachments/turn-456/notes.txt",
     "size": 18422,
     "mimeType": "text/plain"
   }
 ]
-&lt;/minions_attachments&gt;</code></pre>
+&lt;/bees_attachments&gt;</code></pre>
           </div>
         </div>
       </section>
@@ -763,17 +763,17 @@ void consumeChatRun(runTask, sessionId, agentContent, run.runId);</code></pre>
             Hermes owns chat history. If we only append attachment paths to the message string,
             refreshed chat history will show raw manifest text. To keep the UI clean after reload,
             update <code>_project_session_messages()</code> in <code>server/workers/hermes_worker.py</code>
-            to parse <code>&lt;minions_attachments&gt;</code>, remove it from displayed content,
+            to parse <code>&lt;bees_attachments&gt;</code>, remove it from displayed content,
             and return <code>attachments</code> on the user <code>TaskMessage</code>.
           </p>
         </div>
-        <pre><code>def _extract_minions_attachments(content: str) -&gt; tuple[str, list[dict[str, Any]]]:
+        <pre><code>def _extract_bees_attachments(content: str) -&gt; tuple[str, list[dict[str, Any]]]:
     # Find sentinel block, json.loads it, validate shape, return clean text and attachments.
     ...
 
 if role == "user":
-    content = _strip_minions_user_scaffold(content)
-    content, attachments = _extract_minions_attachments(content)
+    content = _strip_bees_user_scaffold(content)
+    content, attachments = _extract_bees_attachments(content)
     if attachments:
         message["attachments"] = attachments</code></pre>
       </section>
@@ -798,7 +798,7 @@ if role == "user":
               <tr>
                 <td>File size</td>
                 <td>Start at 20 MB per file, then raise only if needed</td>
-                <td>Matches Hermes WebUI's proven cap and avoids large multipart requests; the current Minions upload route has no explicit Multer limits.</td>
+                <td>Matches Hermes WebUI's proven cap and avoids large multipart requests; the current Bees upload route has no explicit Multer limits.</td>
               </tr>
               <tr>
                 <td>Paths</td>
@@ -823,7 +823,7 @@ if role == "user":
               <tr>
                 <td>Image preview</td>
                 <td>Draft thumbnails now, persisted thumbnails later</td>
-                <td>Draft thumbnails can use object URLs immediately; persisted history thumbnails need a Minions raw file route.</td>
+                <td>Draft thumbnails can use object URLs immediately; persisted history thumbnails need a Bees raw file route.</td>
               </tr>
             </tbody>
           </table>
@@ -852,7 +852,7 @@ if role == "user":
             <h3>Open decisions</h3>
             <ul>
               <li>Should chat support folders on day one, or only multiple files?</li>
-              <li>Is Hermes WebUI's 20 MB per-file limit acceptable for Minions, or do task workflows need a larger cap?</li>
+              <li>Is Hermes WebUI's 20 MB per-file limit acceptable for Bees, or do task workflows need a larger cap?</li>
               <li>Should old attachment directories be cleaned automatically, or retained as task artifacts?</li>
               <li>Should uploaded files also appear immediately in the existing file browser?</li>
               <li>Do we want a raw file preview endpoint for persisted image thumbnails, or are file badges enough for the MVP?</li>

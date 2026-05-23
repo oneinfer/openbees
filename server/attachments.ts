@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os';
 import multer from 'multer';
 import type { Request, Response, NextFunction } from 'express';
 import type { ChatAttachment } from '../shared/types.js';
-import { resolveMinionsWorkspaceDir } from './paths.js';
+import { resolveBeesWorkspaceDir } from './paths.js';
 
-const ATTACHMENT_TMP_DIR = join(tmpdir(), 'minions-chat-attachments');
+const ATTACHMENT_TMP_DIR = join(tmpdir(), 'bees-chat-attachments');
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENT_COUNT = 10;
 
@@ -51,7 +51,7 @@ export async function saveTaskAttachments(
 ): Promise<ChatAttachment[]> {
   if (files.length === 0) return [];
 
-  const attachmentDir = join(resolveMinionsWorkspaceDir(), 'attachments', taskId);
+  const attachmentDir = join(resolveBeesWorkspaceDir(), 'attachments', taskId);
   mkdirSync(attachmentDir, { recursive: true });
 
   const attachments: ChatAttachment[] = [];

@@ -51,7 +51,7 @@ export async function enrichImageAttachmentContext(
 }
 
 export function imageContextEnabled(): boolean {
-  if (process.env.MINIONS_IMAGE_CONTEXT_ENABLED === 'false') return false;
+  if (process.env.BEES_IMAGE_CONTEXT_ENABLED === 'false') return false;
   return Boolean(imageContextApiKey());
 }
 
@@ -100,7 +100,7 @@ async function summarizeImageAttachment(attachment: ChatAttachment): Promise<str
                 type: 'image_url',
                 image_url: {
                   url: `data:${attachment.mimeType};base64,${image.toString('base64')}`,
-                  detail: process.env.MINIONS_IMAGE_CONTEXT_DETAIL || 'auto',
+                  detail: process.env.BEES_IMAGE_CONTEXT_DETAIL || 'auto',
                 },
               },
             ],
@@ -147,28 +147,28 @@ function normalizeSummary(value: string): string | null {
 }
 
 function imageContextApiKey(): string | null {
-  return process.env.MINIONS_IMAGE_CONTEXT_API_KEY?.trim()
+  return process.env.BEES_IMAGE_CONTEXT_API_KEY?.trim()
     || process.env.OPENAI_API_KEY?.trim()
     || null;
 }
 
 function imageContextBaseUrl(): string {
-  const baseUrl = process.env.MINIONS_IMAGE_CONTEXT_BASE_URL?.trim()
+  const baseUrl = process.env.BEES_IMAGE_CONTEXT_BASE_URL?.trim()
     || process.env.OPENAI_BASE_URL?.trim()
     || DEFAULT_BASE_URL;
   return baseUrl.replace(/\/+$/, '');
 }
 
 function imageContextModel(): string {
-  return process.env.MINIONS_IMAGE_CONTEXT_MODEL?.trim() || DEFAULT_MODEL;
+  return process.env.BEES_IMAGE_CONTEXT_MODEL?.trim() || DEFAULT_MODEL;
 }
 
 function imageContextMaxOutputTokens(): number {
-  const value = Number(process.env.MINIONS_IMAGE_CONTEXT_MAX_TOKENS);
+  const value = Number(process.env.BEES_IMAGE_CONTEXT_MAX_TOKENS);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
 function imageContextTimeoutMs(): number {
-  const value = Number(process.env.MINIONS_IMAGE_CONTEXT_TIMEOUT_MS);
+  const value = Number(process.env.BEES_IMAGE_CONTEXT_TIMEOUT_MS);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_TIMEOUT_MS;
 }

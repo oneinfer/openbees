@@ -22,7 +22,7 @@ export function NewTaskPage() {
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [workspacePath, setWorkspacePath] = useState(() => {
     if (requestedWorkspacePath) return requestedWorkspacePath;
-    return localStorage.getItem('minions:lastWorkspacePath') ?? '';
+    return localStorage.getItem('bees:lastWorkspacePath') ?? '';
   });
   const [planModeEnabled, setPlanModeEnabled] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -67,8 +67,8 @@ export function NewTaskPage() {
         planModeEnabled ? 'plan' : 'direct',
         files,
       );
-      if (normalizedWorkspacePath) localStorage.setItem('minions:lastWorkspacePath', normalizedWorkspacePath);
-      else localStorage.removeItem('minions:lastWorkspacePath');
+      if (normalizedWorkspacePath) localStorage.setItem('bees:lastWorkspacePath', normalizedWorkspacePath);
+      else localStorage.removeItem('bees:lastWorkspacePath');
       navigate(normalizedWorkspacePath ? projectHref(normalizedWorkspacePath) : '/');
     } catch (error) {
       setWorkspaceError(toErrorMessage(error, 'Failed to create task'));

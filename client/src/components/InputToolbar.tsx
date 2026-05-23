@@ -88,7 +88,7 @@ const MODEL_PICKER_RECENT_GROUP_ID = 'special:recent';
 const MODEL_PICKER_SEARCH_GROUP_ID = 'special:search';
 const MODEL_PICKER_MIN_WIDTH = 620;
 const MODEL_PICKER_MAX_HEIGHT = 410;
-const RECENT_MODELS_STORAGE_KEY = 'minions.recentModels';
+const RECENT_MODELS_STORAGE_KEY = 'bees.recentModels';
 const MAX_RECENT_MODELS = 5;
 
 function parseSearchTerms(query: string): string[] {

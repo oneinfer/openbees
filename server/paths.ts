@@ -12,33 +12,33 @@ function resolveHomeAwarePath(value: string): string {
   return resolve(expandHomePrefix(value));
 }
 
-export function resolveMinionsHome(): string {
-  const configured = process.env.MINIONS_HOME?.trim();
-  return resolveHomeAwarePath(configured || '~/.minions');
+export function resolveBeesHome(): string {
+  const configured = process.env.BEES_HOME?.trim();
+  return resolveHomeAwarePath(configured || '~/.bees');
 }
 
-export function resolveMinionsDataDir(): string {
-  return join(resolveMinionsHome(), 'data');
+export function resolveBeesDataDir(): string {
+  return join(resolveBeesHome(), 'data');
 }
 
-export function resolveMinionsLogsDir(): string {
-  return join(resolveMinionsHome(), 'logs');
+export function resolveBeesLogsDir(): string {
+  return join(resolveBeesHome(), 'logs');
 }
 
-export function resolveMinionsWorkspaceDir(): string {
-  return join(resolveMinionsHome(), 'workspace');
+export function resolveBeesWorkspaceDir(): string {
+  return join(resolveBeesHome(), 'workspace');
 }
 
-export function resolveMinionsDbPath(): string {
+export function resolveBeesDbPath(): string {
   const configured = process.env.DB_PATH?.trim();
   if (configured) return resolveHomeAwarePath(configured);
-  return join(resolveMinionsDataDir(), 'minions.db');
+  return join(resolveBeesDataDir(), 'bees.db');
 }
 
-export function ensureMinionsStateDirs(): void {
-  const dbPath = resolveMinionsDbPath();
-  mkdirSync(resolveMinionsDataDir(), { recursive: true });
-  mkdirSync(resolveMinionsLogsDir(), { recursive: true });
-  mkdirSync(resolveMinionsWorkspaceDir(), { recursive: true });
+export function ensureBeesStateDirs(): void {
+  const dbPath = resolveBeesDbPath();
+  mkdirSync(resolveBeesDataDir(), { recursive: true });
+  mkdirSync(resolveBeesLogsDir(), { recursive: true });
+  mkdirSync(resolveBeesWorkspaceDir(), { recursive: true });
   mkdirSync(dirname(dbPath), { recursive: true });
 }
