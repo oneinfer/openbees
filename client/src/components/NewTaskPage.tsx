@@ -8,7 +8,7 @@ import {
   composerAttachmentsFromClipboard,
   type ComposerAttachment,
 } from './AttachmentPicker';
-import { createTask, pickWorkspaceDirectory } from '../lib/api';
+import { createTask, moveTask, pickWorkspaceDirectory } from '../lib/api';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { isEditableTarget, handleChatKeyDown } from '../lib/keyboard';
 import { toErrorMessage } from '../lib/format';
@@ -18,6 +18,7 @@ export function NewTaskPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const requestedWorkspacePath = searchParams.get('workspacePath')?.trim() ?? '';
+  const requestedStatus = searchParams.get('status') === 'in_progress' ? 'in_progress' : null;
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [workspacePath, setWorkspacePath] = useState(() => {
@@ -57,7 +58,7 @@ export function NewTaskPage() {
     setIsCreating(true);
     setWorkspaceError(null);
     try {
-      await createTask(
+      const created = await createTask(
         text || (files.length === 1 ? 'Attached file.' : 'Attached files.'),
         undefined,
         normalizedWorkspacePath || null,
@@ -67,14 +68,18 @@ export function NewTaskPage() {
         planModeEnabled ? 'plan' : 'direct',
         files,
       );
+      const task = requestedStatus === 'in_progress'
+        ? (await moveTask(created.task.id, 'in_progress')).task
+        : created.task;
       if (normalizedWorkspacePath) localStorage.setItem('minions:lastWorkspacePath', normalizedWorkspacePath);
       else localStorage.removeItem('minions:lastWorkspacePath');
-      navigate(normalizedWorkspacePath ? projectHref(normalizedWorkspacePath) : '/');
+      if (requestedStatus === 'in_progress') navigate(`/tasks/${task.id}`);
+      else navigate(normalizedWorkspacePath ? projectHref(normalizedWorkspacePath) : '/');
     } catch (error) {
       setWorkspaceError(toErrorMessage(error, 'Failed to create task'));
       setIsCreating(false);
     }
-  }, [attachments, defaults, input, isCreating, isLoading, model, navigate, normalizedWorkspacePath, planModeEnabled, reasoningEffort, runtime]);
+  }, [attachments, defaults, input, isCreating, isLoading, model, navigate, normalizedWorkspacePath, planModeEnabled, reasoningEffort, requestedStatus, runtime]);
 
   const handleChooseWorkspace = useCallback(async () => {
     if (isPickingWorkspace || isCreating) return;

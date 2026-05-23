@@ -35,7 +35,8 @@ export function Column({
   const { setNodeRef, isOver } = useDroppable({ id: status });
   const navigate = useNavigate();
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
-  const showAddButton = status === 'pending';
+  const showAddButton = status === 'pending' || status === 'in_progress';
+  const createTaskPath = status === 'in_progress' ? '/tasks/new?status=in_progress' : '/tasks/new';
   const showFlushButton = status === 'pending';
   const showPullRequestButton = status === 'in_review';
 
@@ -105,7 +106,7 @@ export function Column({
           {showAddButton && (
             <button
               type="button"
-              onClick={() => navigate('/tasks/new')}
+              onClick={() => navigate(createTaskPath)}
               aria-label="Create task"
               title="Create task"
               className="h-6 w-6 inline-flex items-center justify-center rounded-md text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
@@ -130,7 +131,7 @@ export function Column({
           <div className="h-9 shrink-0">
             <button
               type="button"
-              onClick={() => navigate('/tasks/new')}
+              onClick={() => navigate(createTaskPath)}
               aria-label="Create task"
               title="Create task"
               className="h-9 w-full inline-flex items-center justify-center rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800/60 hover:border-zinc-300 dark:hover:border-zinc-700 transition-[background-color,border-color,color]"
