@@ -10,7 +10,7 @@ export interface BundledSkillMeta {
   name: string;
   description: string;
   key: string;
-  source: 'Minions bundled';
+  source: 'Bees bundled';
   bundled: true;
   readOnly: true;
   autoIncluded: true;
@@ -107,8 +107,8 @@ function parseSkillContent(id: string, filePath: string, content: string): Bundl
     id,
     name,
     description,
-    key: `minions/${id}`,
-    source: 'Minions bundled',
+    key: `bees/${id}`,
+    source: 'Bees bundled',
     bundled: true,
     readOnly: true,
     autoIncluded: true,
@@ -167,7 +167,7 @@ export function ensureBundledSkillsLinked(): void {
   const hermesHome = process.env.HERMES_HOME
     ? expandHomePrefix(process.env.HERMES_HOME)
     : join(homedir(), '.hermes');
-  const target = join(hermesHome, 'skills', 'minions');
+  const target = join(hermesHome, 'skills', 'bees');
   try {
     mkdirSync(dirname(target), { recursive: true });
 

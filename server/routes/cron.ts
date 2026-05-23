@@ -6,7 +6,7 @@ import type { HermesWorkerAdapter } from '../adapters/hermes-worker.js';
 
 function originTaskId(job: CronJob): string | null {
   const origin = job.origin;
-  if (!origin || origin.platform !== 'minions') return null;
+  if (!origin || origin.platform !== 'bees') return null;
   return typeof origin.chat_id === 'string' && origin.chat_id.trim() ? origin.chat_id : null;
 }
 

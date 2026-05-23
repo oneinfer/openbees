@@ -33,11 +33,11 @@ That means:
 Configure `.env` with the runtime(s) you want to use:
 
 ```env
-MINIONS_DEFAULT_RUNTIME=hermes
+BEES_DEFAULT_RUNTIME=hermes
 
-MINIONS_CODEX_COMMAND=codex
-MINIONS_CLAUDE_CODE_COMMAND=claude
-MINIONS_OPENCODE_COMMAND=opencode
+BEES_CODEX_COMMAND=codex
+BEES_CLAUDE_CODE_COMMAND=claude
+BEES_OPENCODE_COMMAND=opencode
 ```
 
 These can also point to wrapper scripts if you want a fixed model or extra flags.
@@ -75,23 +75,23 @@ The app will fall back to the plain executable names shown above. If the CLI is 
 Older builds treated empty runtime commands as unconfigured and failed with:
 
 ```text
-[Error: <runtime> runtime is not configured. Set the corresponding MINIONS_*_COMMAND environment variable.]
+[Error: <runtime> runtime is not configured. Set the corresponding BEES_*_COMMAND environment variable.]
 ```
 
 ## Context passed to command runtimes
 
 When the app runs a command runtime, it provides task context through environment variables:
 
-- `MINIONS_RUNTIME`
-- `MINIONS_TASK_ID`
-- `MINIONS_TASK_TITLE`
-- `MINIONS_TASK_REPO`
-- `MINIONS_TASK_MESSAGE`
-- `MINIONS_TASK_SYSTEM_PROMPT`
-- `MINIONS_TASK_PROMPT_FILE`
-- `MINIONS_TASK_CONTEXT_FILE`
+- `BEES_RUNTIME`
+- `BEES_TASK_ID`
+- `BEES_TASK_TITLE`
+- `BEES_TASK_REPO`
+- `BEES_TASK_MESSAGE`
+- `BEES_TASK_SYSTEM_PROMPT`
+- `BEES_TASK_PROMPT_FILE`
+- `BEES_TASK_CONTEXT_FILE`
 
-`MINIONS_TASK_CONTEXT_FILE` contains a JSON payload with:
+`BEES_TASK_CONTEXT_FILE` contains a JSON payload with:
 
 - runtime
 - sessionId

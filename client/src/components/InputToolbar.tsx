@@ -88,7 +88,7 @@ const MODEL_PICKER_RECENT_GROUP_ID = 'special:recent';
 const MODEL_PICKER_SEARCH_GROUP_ID = 'special:search';
 const MODEL_PICKER_MIN_WIDTH = 620;
 const MODEL_PICKER_MAX_HEIGHT = 410;
-const RECENT_MODELS_STORAGE_KEY = 'minions.recentModels';
+const RECENT_MODELS_STORAGE_KEY = 'bees.recentModels';
 const MAX_RECENT_MODELS = 5;
 
 function parseSearchTerms(query: string): string[] {
@@ -398,6 +398,7 @@ export interface ModelPickerProps {
   modelGroups: AgentModelGroup[];
   disabled?: boolean;
   title: string;
+  recentScope?: string;
   showInheritOption?: boolean;
   onChange: (value: string) => void;
 }
@@ -417,9 +418,13 @@ function providerGroupId(provider: string): string {
   return `provider:${provider}`;
 }
 
-function readRecentModels(): string[] {
+function recentModelsStorageKey(scope?: string): string {
+  return scope ? `${RECENT_MODELS_STORAGE_KEY}:${scope}` : RECENT_MODELS_STORAGE_KEY;
+}
+
+function readRecentModels(scope?: string): string[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(RECENT_MODELS_STORAGE_KEY) ?? '[]');
+    const parsed = JSON.parse(localStorage.getItem(recentModelsStorageKey(scope)) ?? '[]');
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((item): item is string => typeof item === 'string' && item.length > 0).slice(0, MAX_RECENT_MODELS);
   } catch {
@@ -427,9 +432,9 @@ function readRecentModels(): string[] {
   }
 }
 
-function writeRecentModels(modelIds: string[]) {
+function writeRecentModels(modelIds: string[], scope?: string) {
   try {
-    localStorage.setItem(RECENT_MODELS_STORAGE_KEY, JSON.stringify(modelIds.slice(0, MAX_RECENT_MODELS)));
+    localStorage.setItem(recentModelsStorageKey(scope), JSON.stringify(modelIds.slice(0, MAX_RECENT_MODELS)));
   } catch {
     // Recent models are a convenience only.
   }
@@ -460,6 +465,7 @@ export function ModelPicker({
   modelGroups,
   disabled = false,
   title,
+  recentScope,
   showInheritOption = true,
   onChange,
 }: ModelPickerProps) {
@@ -634,17 +640,17 @@ export function ModelPicker({
     if (model.value) {
       setRecentModelIds((current) => {
         const next = [model.value, ...current.filter((modelId) => modelId !== model.value)].slice(0, MAX_RECENT_MODELS);
-        writeRecentModels(next);
+        writeRecentModels(next, recentScope);
         return next;
       });
     }
     setOpen(false);
     triggerRef.current?.focus();
-  }, [onChange]);
+  }, [onChange, recentScope]);
 
   useEffect(() => {
-    setRecentModelIds(readRecentModels());
-  }, []);
+    setRecentModelIds(readRecentModels(recentScope));
+  }, [recentScope]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -1037,6 +1043,7 @@ export function InputToolbar({
           modelGroups={modelGroups}
           disabled={disabled}
           title={model ? `Model: ${model}` : resolvedDefaultModel ? `Inherits ${resolvedDefaultModel}` : 'Inherits default model'}
+          recentScope={effectiveRuntime}
           onChange={(nextModel) => onModelChange(nextModel || null)}
         />
       )}

@@ -1,32 +1,31 @@
-# Minions
+# Bees
 
 **Mission Control for Hermes Agent**
 
 Hermes Agent is powerful, but running real work on it means juggling terminal sessions, losing track of which job finished, and manually checking on long-running tasks. The more you delegate, the harder it gets to manage.
 
-Minions gives you one screen to create, supervise, and review autonomous Hermes Agent work.
+Bees gives you one screen to create, supervise, and review autonomous Hermes Agent work.
 
-Hosted access opens May 10 on [Agent37](https://www.agent37.com). Run locally today.
 
 ## Preview
 
-Minions task dashboard
+Bees task dashboard
 
 ## Demo
 
 
 
-## Why Minions Exists
+## Why Bees Exists
 
 The first agent task is fun. The tenth is operations.
 
 Power users do not just ask an agent one question. They delegate research, coding, monitoring, sales ops, writing, and recurring workflows. Those jobs take time. They need review. Cron runs disappear into the background. Context fills up.
 
-Minions turns Hermes sessions into durable, reviewable work.
+Bees turns Hermes sessions into durable, reviewable work.
 
 ## Not Just A Board
 
-Minions is not just a task board. After each agent turn, a lightweight completion judge evaluates whether the task is done and auto-moves it to **Ready for review**. You verify and close — nothing moves to done without your sign-off.
+Bees is not just a task board. After each agent turn, a lightweight completion judge evaluates whether the task is done and auto-moves it to **Ready for review**. You verify and close — nothing moves to done without your sign-off.
 
 ## Features
 
@@ -45,8 +44,8 @@ Minions is not just a task board. After each agent turn, a lightweight completio
 **Prerequisites:** Node.js 20-23 (Node.js 22 LTS recommended). `npm install` and `npm run dev` will detect Hermes Agent, write the discovered `HERMES_AGENT_DIR`, `HERMES_PYTHON`, and `HERMES_HOME` values to `.env` and `.env.example`, and run the official Hermes installer if Hermes is missing.
 
 ```bash
-git clone https://github.com/Agent-3-7/hermes-agent-mission-control.git
-cd hermes-agent-mission-control
+git clone https://github.com/oneinfer/openbees.git
+cd openbees
 npm install
 npm run dev
 ```
@@ -63,7 +62,7 @@ Hermes setup can also be run directly:
 npm run setup:hermes
 ```
 
-By default the setup scans `PATH`, configured env vars, and common Hermes install locations. For a slower broader scan, run with `MINIONS_HERMES_FULL_SCAN=1`.
+By default the setup scans `PATH`, configured env vars, and common Hermes install locations. For a slower broader scan, run with `Bees_HERMES_FULL_SCAN=1`.
 
 ## How It Works
 
@@ -75,7 +74,7 @@ Express server (:6969)
 Python worker → Hermes AIAgent
 ```
 
-Each task is a persistent Hermes root session. You talk to it, it works, and the board reflects where everything stands. Chat transcripts live in Hermes's session database; Minions stores task metadata, status, and per-task settings in a local SQLite database.
+Each task is a persistent Hermes root session. You talk to it, it works, and the board reflects where everything stands. Chat transcripts live in Hermes's session database; Bees stores task metadata, status, and per-task settings in a local SQLite database.
 
 ## Who It's For
 
@@ -88,7 +87,7 @@ Each task is a persistent Hermes root session. You talk to it, it works, and the
 - **Cron supervision**: automatically monitor, recover, and report on scheduled agent jobs
 - **Notifications**: get alerted via Telegram, WhatsApp, or webhook when a task needs review
 - **Skills library**: pluggable skill templates for common workflows (lead gen, web research, content pipelines, data collection, competitive monitoring, outbound sequences)
-- **OpenClaw adapter**: run Minions against OpenClaw-hosted agents
+- **OpenClaw adapter**: run Bees against OpenClaw-hosted agents
 
 ## FAQ
 

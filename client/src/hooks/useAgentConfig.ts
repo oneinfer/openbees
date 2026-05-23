@@ -88,7 +88,8 @@ export function useAgentConfig(taskId?: string, initialSettings?: AgentRunSettin
   const replaceDefaults = useCallback((d: AgentDefaults) => {
     writeCachedAgentDefaults(d);
     setDefaults(d);
-  }, []);
+    if (!taskId) setRuntime(initialRef.current?.runtime ?? d.runtime ?? null);
+  }, [taskId]);
 
   return {
     defaults,

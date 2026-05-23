@@ -1,6 +1,6 @@
 ---
 name: lead-generation
-description: This skill should be used when users create lead generation or prospecting tasks in Minions. It guides the agent through a structured workflow — collecting test leads, getting user sign-off on columns and format, then setting up a recurring Hermes cron job that appends leads to a local CSV file.
+description: This skill should be used when users create lead generation or prospecting tasks in Bees. It guides the agent through a structured workflow — collecting test leads, getting user sign-off on columns and format, then setting up a recurring Hermes cron job that appends leads to a local CSV file.
 ---
 
 # Lead Generation

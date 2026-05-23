@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentDefaults, AgentModelsResponse, CronJob, CronRun, SessionMetadata, TaskMessage } from '../../shared/types.js';
 import type { AgentAdapter, AgentRunOptions, StreamEvent } from './types.js';
 import type { WorkerEvent, WorkerRequest, WorkerResult, WorkerErrorPayload } from './worker-protocol.js';
-import { expandHomePrefix, resolveMinionsWorkspaceDir } from '../paths.js';
+import { expandHomePrefix, resolveBeesWorkspaceDir } from '../paths.js';
 
 const WORKER_READY_TIMEOUT_MS = 30_000;
 
@@ -348,7 +348,7 @@ class HermesWorkerClient {
 
     const python = resolvePython();
     const script = resolveWorkerScript();
-    const workspace = resolveMinionsWorkspaceDir();
+    const workspace = resolveBeesWorkspaceDir();
     mkdirSync(workspace, { recursive: true });
     const child = spawn(python, [script], {
       cwd: workspace,

@@ -57,7 +57,7 @@ export function buildTaskAgentSystemPrompt(context: TaskPromptContext): string {
     <guideline>If a repository path is provided, prefer that repository over the default workspace for file reads and edits.</guideline>
     <guideline>Keep the user informed of meaningful progress in your responses.</guideline>
     <guideline>You may do the work yourself, create a child session for focused sub-work, or set up a cron job for recurring tasks.</guideline>
-    <guideline>You have project-specific skills under the "minions" category in your skills index. Before executing a task, check if any minions skill is relevant and load it.</guideline>
+    <guideline>You have project-specific skills under the "bees" category in your skills index. Before executing a task, check if any bees skill is relevant and load it.</guideline>
   </guidelines>
 </task_agent>`;
 }

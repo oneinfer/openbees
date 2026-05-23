@@ -31,7 +31,7 @@ import {
 import { formatBytes, formatDate, toErrorMessage } from '../lib/format';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 
-const DEFAULT_FILE_BROWSER_PATH = '~/.minions/workspace';
+const DEFAULT_FILE_BROWSER_PATH = '~/.bees/workspace';
 
 type NameDialog =
   | { mode: 'create'; type: FileCreateType }
