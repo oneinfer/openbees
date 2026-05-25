@@ -265,7 +265,7 @@ python3.12 -m venv ~/.bees/qwen-asr-venv
 ~/.bees/qwen-asr-venv/bin/pip install -U qwen-asr
 ```
 
-Development setup is now automatic. `npm run dev` creates `.venv-qwen-asr`, installs `qwen-asr` if it is missing, and writes the required `QWEN_ASR_*` values into `.env`.
+Development startup stays simple: `npm run dev` creates `.venv-qwen-asr`, installs `qwen-asr` if it is missing, writes the required `QWEN_ASR_*` values into local `.env`, and starts the app. `npm run setup:asr` is available as a repair/prep command, but normal users do not need it. The backend starts the ASR worker on demand.
 
 Example Windows manual setup if you want to prepare it yourself:
 
@@ -274,7 +274,7 @@ python -m venv .venv-qwen-asr
 .\.venv-qwen-asr\Scripts\pip.exe install -U qwen-asr
 ```
 
-Then set local `.env` values. `npm run dev` can fill in the Python path automatically, so keep committed examples path-free:
+Then set local `.env` values. Keep committed examples path-free:
 
 ```env
 QWEN_ASR_ENABLED=true

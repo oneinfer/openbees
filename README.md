@@ -41,7 +41,7 @@ Bees is not just a task board. After each agent turn, a lightweight completion j
 
 ## Quick Start
 
-**Prerequisites:** Node.js 20-23 (Node.js 22 LTS recommended). `npm install` and `npm run dev` will detect Hermes Agent, write the discovered `HERMES_AGENT_DIR`, `HERMES_PYTHON`, and `HERMES_HOME` values to `.env` and `.env.example`, and run the official Hermes installer if Hermes is missing.
+**Prerequisites:** Node.js 20-23 (Node.js 22 LTS recommended). `npm install` and `npm run dev` will detect Hermes Agent, write the discovered `HERMES_AGENT_DIR`, `HERMES_PYTHON`, and `HERMES_HOME` values to local `.env`, and run the official Hermes installer if Hermes is missing.
 
 ```bash
 git clone https://github.com/oneinfer/openbees.git
@@ -63,6 +63,8 @@ npm run setup:hermes
 ```
 
 By default the setup scans `PATH`, configured env vars, and common Hermes install locations. For a slower broader scan, run with `Bees_HERMES_FULL_SCAN=1`.
+
+Optional microphone transcription uses Qwen3-ASR. `npm run dev` prepares the local ASR environment automatically if needed. There is no separate ASR service to start; the backend launches the ASR worker on demand when the microphone transcription endpoint is used.
 
 ## How It Works
 

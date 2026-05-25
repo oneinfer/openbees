@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { platform } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 const QWEN_ASR_KEYS = [
   'QWEN_ASR_ENABLED',
@@ -203,6 +204,7 @@ function ensureEnvFiles(values, { writeLocalEnv = true, writeExampleEnv = true, 
 
 export function ensureQwenAsrEnvironment(options = {}) {
   const {
+    enabled: enabledOverride,
     installIfMissing = process.env.BEES_SKIP_QWEN_ASR_INSTALL !== '1',
     writeLocalEnv = true,
     writeExampleEnv = true,
@@ -211,7 +213,9 @@ export function ensureQwenAsrEnvironment(options = {}) {
   const python = qwenVenvPython();
   const localEnv = parseEnvFile(resolve(process.cwd(), '.env'));
   const configured = (key) => process.env[key]?.trim() || localEnv[key]?.trim();
-  const enabled = (configured('QWEN_ASR_ENABLED') || 'true').toLowerCase() === 'true';
+  const enabled = typeof enabledOverride === 'boolean'
+    ? enabledOverride
+    : (configured('QWEN_ASR_ENABLED') || 'false').toLowerCase() === 'true';
   const values = {
     QWEN_ASR_ENABLED: String(enabled),
     QWEN_ASR_PYTHON: python,
@@ -271,4 +275,27 @@ export function ensureQwenAsrEnvironment(options = {}) {
   }
 
   return { python, installed, venvDir: qwenVenvDir(), binDir: qwenVenvBinDir() };
+}
+
+function isMainModule() {
+  return process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+}
+
+async function main() {
+  const args = new Set(process.argv.slice(2));
+  ensureQwenAsrEnvironment({
+    enabled: !args.has('--disabled'),
+    installIfMissing: !args.has('--no-install'),
+    writeLocalEnv: !args.has('--no-env'),
+    writeExampleEnv: !args.has('--no-env-example'),
+  });
+}
+
+if (isMainModule()) {
+  try {
+    await main();
+  } catch (error) {
+    console.error(`[qwen-asr-setup] ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
 }
