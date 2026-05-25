@@ -462,7 +462,7 @@ export function TaskChat({
                 onChange={setAttachments}
               />
               <VoiceInputButton
-                disabled={inputDisabled}
+                disabled={composerControlsDisabled}
                 onTranscript={handleVoiceTranscript}
                 onError={setVoiceError}
               />
