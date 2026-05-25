@@ -181,6 +181,21 @@ export interface AgentModelsResponse {
   groups: AgentModelGroup[];
 }
 
+export interface AsrStatusResponse {
+  enabled: boolean;
+  available: boolean;
+  model: string;
+  device: string;
+  dtype: string;
+  error?: string;
+}
+
+export interface AsrTranscriptionResponse {
+  text: string;
+  language: string | null;
+  durationMs: number;
+}
+
 export interface TaskAgentSettings {
   task: {
     runtime: AgentRuntime | null;

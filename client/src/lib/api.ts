@@ -5,6 +5,8 @@ import type {
   AgentRuntimeInstallResponse,
   AgentRuntimesResponse,
   AgentRunSettings,
+  AsrStatusResponse,
+  AsrTranscriptionResponse,
   CronJob,
   CronRun,
   FileCreateResponse,
@@ -170,7 +172,22 @@ export function fetchSession(taskId: string) {
 }
 
 export function fetchHealth() {
-  return request<{ ok: boolean; hermes: boolean; runtimes: Record<AgentRuntime, boolean> }>('/health');
+  return request<{ ok: boolean; hermes: boolean; runtimes: Record<AgentRuntime, boolean>; asr: AsrStatusResponse }>('/health');
+}
+
+export function fetchAsrStatus() {
+  return request<AsrStatusResponse>('/asr/status');
+}
+
+export function transcribeAudio(audio: Blob, language?: string) {
+  const formData = new FormData();
+  formData.append('audio', audio, 'speech.webm');
+  appendOptionalFormValue(formData, 'language', language);
+
+  return request<AsrTranscriptionResponse>('/asr/transcribe', {
+    method: 'POST',
+    body: formData,
+  });
 }
 
 export function fetchAgentDefaults() {

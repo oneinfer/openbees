@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowUp, FolderOpen, GitBranch, Loader2, X } from 'lucide-react';
 import { InputToolbar } from './InputToolbar';
+import { VoiceInputButton } from './VoiceInputButton';
 import {
   AttachmentPicker,
   AttachmentPreviewList,
@@ -29,6 +30,7 @@ export function NewTaskPage() {
   const [isCreating, setIsCreating] = useState(false);
   const [isPickingWorkspace, setIsPickingWorkspace] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const { defaults, runtimeOptions, runtime, setRuntime, modelGroups, runtimeDefaultModel, model, setModel, reasoningEffort, setReasoningEffort, isLoading } = useAgentConfig();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const normalizedWorkspacePath = workspacePath.trim();
@@ -111,6 +113,25 @@ export function NewTaskPage() {
     setAttachments((current) => [...current, ...pastedAttachments]);
   }, [isCreating]);
 
+  const handleVoiceTranscript = useCallback((text: string) => {
+    const target = inputRef.current;
+    const start = target?.selectionStart ?? input.length;
+    const end = target?.selectionEnd ?? input.length;
+    const prefix = input.slice(0, start);
+    const suffix = input.slice(end);
+    const before = prefix && !/\s$/.test(prefix) ? ' ' : '';
+    const after = suffix && !/^\s/.test(suffix) ? ' ' : '';
+    const next = `${prefix}${before}${text}${after}${suffix}`;
+    const cursor = prefix.length + before.length + text.length + after.length;
+
+    setInput(next);
+    setVoiceError(null);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(cursor, cursor);
+    });
+  }, [input]);
+
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 py-8">
       <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100 mb-6">
@@ -168,6 +189,11 @@ export function NewTaskPage() {
                 disabled={isCreating}
                 onChange={setAttachments}
               />
+              <VoiceInputButton
+                disabled={isCreating}
+                onTranscript={handleVoiceTranscript}
+                onError={setVoiceError}
+              />
               <button
                 type="button"
                 onClick={() => setPlanModeEnabled((current) => !current)}
@@ -222,6 +248,13 @@ export function NewTaskPage() {
             <div className="px-4 pb-3">
               <p className="text-xs text-red-500 dark:text-red-400">
                 {workspaceError}
+              </p>
+            </div>
+          )}
+          {voiceError && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-red-500 dark:text-red-400">
+                {voiceError}
               </p>
             </div>
           )}

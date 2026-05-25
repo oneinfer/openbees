@@ -10,8 +10,8 @@
   "scripts": {
     "preinstall": "node scripts/check-runtime.mjs",
     "setup:hermes": "node scripts/hermes-setup.mjs",
-    "dev": "node scripts/dev.mjs",
-    "dev:server": "node scripts/dev.mjs",
+    "dev": "node --import tsx scripts/dev.mjs",
+    "dev:server": "node --import tsx scripts/dev.mjs",
     "clean": "node scripts/clean.mjs",
     "build": "npm run clean && npm run build:server && npm run build:client && npm run build:assets",
     "build:client": "node scripts/build-client.mjs",

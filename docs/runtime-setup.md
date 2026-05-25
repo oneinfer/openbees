@@ -126,3 +126,44 @@ If you want the app itself to:
 - store per-runtime model defaults
 
 that needs one more implementation pass in the backend and UI.
+
+## Optional Qwen3-ASR Voice Input
+
+Bees can transcribe spoken task/chat input with `Qwen/Qwen3-ASR-0.6B`. This is a speech-to-text layer only: the transcript is inserted into the composer, and the normal task/chat send flow still uses the selected task runtime.
+
+In development, `npm run dev` checks the project-local `.venv-qwen-asr` environment, creates it if needed, installs `qwen-asr` if missing, and writes the required `QWEN_ASR_*` values into `.env`.
+
+Manual setup is only needed if you want to prepare it ahead of time:
+
+```powershell
+python -m venv .venv-qwen-asr
+.\.venv-qwen-asr\Scripts\pip.exe install -U qwen-asr
+```
+
+The dev setup writes the discovered Python path to local `.env`. Keep `.env.example` portable:
+
+```env
+QWEN_ASR_ENABLED=false
+QWEN_ASR_PYTHON=
+QWEN_ASR_MODEL=Qwen/Qwen3-ASR-0.6B
+QWEN_ASR_DEVICE=cpu
+QWEN_ASR_DTYPE=float32
+```
+
+For CUDA GPU machines, prefer:
+
+```env
+QWEN_ASR_DEVICE=cuda:0
+QWEN_ASR_DTYPE=bfloat16
+```
+
+The browser microphone API works on `localhost` during development. Remote deployments need HTTPS for microphone permissions.
+
+To start the app without installing Qwen ASR dependencies, run:
+
+```powershell
+$env:BEES_SKIP_QWEN_ASR_INSTALL='1'
+npm run dev
+```
+
+With that skip flag, voice input will stay unavailable until `qwen-asr` is installed.

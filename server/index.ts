@@ -2,7 +2,7 @@ import 'dotenv/config';
 import './db/index.js';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import app, { agents } from './app.js';
+import app, { agents, qwenAsr } from './app.js';
 import { mountFrontend, type FrontendCleanup } from './frontend.js';
 import { ensureBundledSkillsLinked } from './skills/catalog.js';
 
@@ -21,6 +21,17 @@ async function main() {
   await once(httpServer, 'listening');
 
   console.log(`Hermes Agent Mission Control running on http://localhost:${PORT}`);
+
+  if (qwenAsr.enabled() && process.env.QWEN_ASR_PRELOAD?.trim().toLowerCase() === 'true') {
+    console.log('Loading Qwen ASR model...');
+    void qwenAsr.preload()
+      .then(() => {
+        console.log('Qwen ASR model loaded.');
+      })
+      .catch((error) => {
+        console.error('Qwen ASR model failed to load:', error);
+      });
+  }
 }
 
 function closeHttpServer(): Promise<void> {
@@ -56,6 +67,7 @@ async function shutdown(reason: ShutdownReason, exitCode = 0): Promise<void> {
     closeHttpServer(),
     closeFrontend(),
     agents.stop(),
+    qwenAsr.stop(),
   ]);
 
   for (const result of results) {

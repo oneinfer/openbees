@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { ArrowUp, Loader2, ChevronDown, ChevronRight, Check, Terminal, FileText, FilePenLine, Globe, Code, Wrench, Image as ImageIcon, X } from 'lucide-react';
 import { InputToolbar, ContextRing } from './InputToolbar';
+import { VoiceInputButton } from './VoiceInputButton';
 import {
   AttachmentPicker,
   AttachmentPreviewList,
@@ -252,6 +253,7 @@ export function TaskChat({
   const [selectedArtifact, setSelectedArtifact] = useState<ChatArtifact | null>(null);
   const [selectedAttachment, setSelectedAttachment] = useState<ChatAttachment | null>(null);
   const [loadedTaskId, setLoadedTaskId] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const startupRef = useRef({ taskId, initialMessage, initialSettings });
   if (startupRef.current.taskId !== taskId) {
     startupRef.current = { taskId, initialMessage, initialSettings };
@@ -330,6 +332,25 @@ export function TaskChat({
     if (!event.clipboardData.getData('text/plain')) event.preventDefault();
     setAttachments((current) => [...current, ...pastedAttachments]);
   }, [composerControlsDisabled]);
+
+  const handleVoiceTranscript = useCallback((text: string) => {
+    const target = inputRef.current;
+    const start = target?.selectionStart ?? input.length;
+    const end = target?.selectionEnd ?? input.length;
+    const prefix = input.slice(0, start);
+    const suffix = input.slice(end);
+    const before = prefix && !/\s$/.test(prefix) ? ' ' : '';
+    const after = suffix && !/^\s/.test(suffix) ? ' ' : '';
+    const next = `${prefix}${before}${text}${after}${suffix}`;
+    const cursor = prefix.length + before.length + text.length + after.length;
+
+    setInput(next);
+    setVoiceError(null);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(cursor, cursor);
+    });
+  }, [input]);
 
   return (
     <div className="flex w-full flex-1 min-h-0">
@@ -440,6 +461,11 @@ export function TaskChat({
                 disabled={composerControlsDisabled}
                 onChange={setAttachments}
               />
+              <VoiceInputButton
+                disabled={inputDisabled}
+                onTranscript={handleVoiceTranscript}
+                onError={setVoiceError}
+              />
               <InputToolbar
                 runtime={runtime}
                 model={model}
@@ -465,6 +491,11 @@ export function TaskChat({
               </button>
             </div>
           </div>
+          {voiceError && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-red-500 dark:text-red-400">{voiceError}</p>
+            </div>
+          )}
         </div>
       </div>
       </div>
