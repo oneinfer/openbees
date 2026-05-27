@@ -27,21 +27,25 @@ class ActivityConfig:
     cursor_crop_size: int = 400
     retention_count: int = 200
     storage_mode: str = "sqlite"
-    wake_phrase: str = "hey bees"
+    wake_phrase: str = "hey bee"
     armed_timeout_seconds: float = 20.0
     drag_threshold_pixels: int = 12
     include_base64_by_default: bool = False
     copy_selection_to_extract_text: bool = True
-    preserve_clipboard_after_selection_copy: bool = True
+    preserve_clipboard_after_selection_copy: bool = False
     selection_copy_timeout_seconds: float = 0.8
+    listen_for_command_after_wake: bool = field(default_factory=lambda: os.getenv("LISTEN_FOR_COMMAND_AFTER_WAKE", "0") == "1")
     collectors: CollectorSettings = field(default_factory=CollectorSettings)
-    asr_model_id: str = field(default_factory=lambda: os.getenv("STT_MODEL_ID", "Qwen/Qwen3-ASR-0.6B"))
-    asr_device_map: str = field(default_factory=lambda: os.getenv("STT_DEVICE_MAP", "auto"))
+    asr_model_id: str = field(default_factory=lambda: os.getenv("STT_MODEL_ID") or os.getenv("QWEN_ASR_MODEL", "Qwen/Qwen3-ASR-0.6B"))
+    asr_device_map: str = field(default_factory=lambda: os.getenv("STT_DEVICE_MAP") or os.getenv("QWEN_ASR_DEVICE", "auto"))
+    asr_dtype: str = field(default_factory=lambda: os.getenv("STT_DTYPE") or os.getenv("QWEN_ASR_DTYPE", "auto"))
     asr_max_new_tokens: int = field(default_factory=lambda: int(os.getenv("STT_MAX_NEW_TOKENS", "96")))
+    preload_asr_model: bool = field(default_factory=lambda: os.getenv("PRELOAD_ASR_MODEL", "1") == "1")
     min_energy_threshold: int = field(default_factory=lambda: int(os.getenv("MIN_ENERGY_THRESHOLD", "300")))
     min_wake_audio_rms: int = field(default_factory=lambda: int(os.getenv("MIN_WAKE_AUDIO_RMS", "180")))
     min_command_audio_rms: int = field(default_factory=lambda: int(os.getenv("MIN_COMMAND_AUDIO_RMS", "180")))
     min_audio_seconds: float = field(default_factory=lambda: float(os.getenv("MIN_AUDIO_SECONDS", "0.35")))
+    wake_match_mode: str = field(default_factory=lambda: os.getenv("WAKE_MATCH_MODE", "relaxed"))
     debug_wake: bool = field(default_factory=lambda: os.getenv("DEBUG_WAKE", "1") == "1")
 
     @property
@@ -51,6 +55,10 @@ class ActivityConfig:
     @property
     def images_dir(self) -> Path:
         return self.root / "images"
+
+    @property
+    def captures_dir(self) -> Path:
+        return self.root / "captures"
 
     @property
     def database_path(self) -> Path:
@@ -78,6 +86,9 @@ class ActivityConfig:
         self.drag_threshold_pixels = max(1, int(self.drag_threshold_pixels))
         self.armed_timeout_seconds = max(1.0, float(self.armed_timeout_seconds))
         self.selection_copy_timeout_seconds = max(0.1, min(float(self.selection_copy_timeout_seconds), 5.0))
+        self.wake_match_mode = str(self.wake_match_mode or "relaxed").strip().lower()
+        if self.wake_match_mode not in {"relaxed", "strict"}:
+            self.wake_match_mode = "relaxed"
 
 
 def load_config(config_path: str | None = None) -> ActivityConfig:
@@ -85,7 +96,7 @@ def load_config(config_path: str | None = None) -> ActivityConfig:
     path = Path(config_path).expanduser() if config_path else config.config_path
 
     if path.exists():
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             config.update(json.load(f))
 
     env_data_dir = os.getenv("ONEINFER_ACTIVITY_DATA_DIR")

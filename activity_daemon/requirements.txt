@@ -2,6 +2,7 @@ mss>=9.0.1
 pynput>=1.7.7
 pyperclip>=1.8.2
 SpeechRecognition>=3.10.0
+PyAudio>=0.2.14
 torch
 qwen-asr
 psutil>=5.9.0

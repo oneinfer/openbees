@@ -51,6 +51,7 @@ class ClipboardCollector:
         sentinel = f"__oneinfer_selection_probe_{uuid.uuid4()}__"
         copied_text = ""
         error = None
+        clipboard_restored = False
 
         try:
             self._write_clipboard(sentinel)
@@ -62,12 +63,23 @@ class ClipboardCollector:
                     copied_text = value
                     break
                 time.sleep(0.05)
+            if not copied_text and platform.system().lower() == "windows":
+                self._write_clipboard(sentinel)
+                self._send_copy_shortcut(use_shift=True)
+                deadline = time.monotonic() + timeout_seconds
+                while time.monotonic() < deadline:
+                    value = self._read_clipboard()
+                    if value is not None and value != sentinel:
+                        copied_text = value
+                        break
+                    time.sleep(0.05)
         except Exception as exc:
             error = str(exc)
             self._last_error = error
         finally:
-            if preserve_clipboard and original_text is not None:
+            if original_text is not None and (preserve_clipboard or not copied_text):
                 self._write_clipboard(original_text)
+                clipboard_restored = True
 
         if copied_text:
             with self._lock:
@@ -76,7 +88,7 @@ class ClipboardCollector:
         return {
             "selection_text": copied_text,
             "method": "keyboard_copy",
-            "clipboard_restored": bool(preserve_clipboard and original_text is not None),
+            "clipboard_restored": clipboard_restored,
             "last_error": error,
         }
 
@@ -110,13 +122,22 @@ class ClipboardCollector:
         except Exception as error:
             self._last_error = str(error)
 
-    def _send_copy_shortcut(self) -> None:
+    def _send_copy_shortcut(self, use_shift: bool = False) -> None:
         from pynput.keyboard import Controller, Key
 
         keyboard = Controller()
         modifier = Key.cmd if platform.system().lower() == "darwin" else Key.ctrl
+        time.sleep(0.08)
+        if use_shift:
+            with keyboard.pressed(modifier):
+                with keyboard.pressed(Key.shift):
+                    keyboard.press("c")
+                    time.sleep(0.03)
+                    keyboard.release("c")
+            return
         with keyboard.pressed(modifier):
             keyboard.press("c")
+            time.sleep(0.03)
             keyboard.release("c")
 
     def _read_linux_primary_selection(self) -> str | None:

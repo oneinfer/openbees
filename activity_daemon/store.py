@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import sqlite3
 import threading
@@ -20,18 +21,19 @@ class ActivityStore:
         return sqlite3.connect(self.database_path)
 
     def _init_db(self) -> None:
-        with self._connect() as db:
-            db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS events (
-                    id TEXT PRIMARY KEY,
-                    timestamp TEXT NOT NULL,
-                    trigger TEXT NOT NULL,
-                    payload TEXT NOT NULL
+        with closing(self._connect()) as db:
+            with db:
+                db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS events (
+                        id TEXT PRIMARY KEY,
+                        timestamp TEXT NOT NULL,
+                        trigger TEXT NOT NULL,
+                        payload TEXT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            db.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
+                db.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
 
     def set_retention_count(self, retention_count: int) -> None:
         self.retention_count = max(1, int(retention_count))
@@ -40,32 +42,34 @@ class ActivityStore:
     def add_event(self, event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             self._latest = event
-            with self._connect() as db:
-                db.execute(
-                    "INSERT OR REPLACE INTO events (id, timestamp, trigger, payload) VALUES (?, ?, ?, ?)",
-                    (
-                        str(event["id"]),
-                        str(event["timestamp"]),
-                        str(event.get("trigger", "unknown")),
-                        json.dumps(event, ensure_ascii=False),
-                    ),
-                )
+            with closing(self._connect()) as db:
+                with db:
+                    db.execute(
+                        "INSERT OR REPLACE INTO events (id, timestamp, trigger, payload) VALUES (?, ?, ?, ?)",
+                        (
+                            str(event["id"]),
+                            str(event["timestamp"]),
+                            str(event.get("trigger", "unknown")),
+                            json.dumps(event, ensure_ascii=False),
+                        ),
+                    )
             self._enforce_retention()
         return event
 
     def _enforce_retention(self) -> None:
-        with self._connect() as db:
-            db.execute(
-                """
-                DELETE FROM events
-                WHERE id NOT IN (
-                    SELECT id FROM events
-                    ORDER BY timestamp DESC
-                    LIMIT ?
+        with closing(self._connect()) as db:
+            with db:
+                db.execute(
+                    """
+                    DELETE FROM events
+                    WHERE id NOT IN (
+                        SELECT id FROM events
+                        ORDER BY timestamp DESC
+                        LIMIT ?
+                    )
+                    """,
+                    (self.retention_count,),
                 )
-                """,
-                (self.retention_count,),
-            )
 
     def latest(self) -> dict[str, Any] | None:
         if self._latest is not None:
@@ -76,7 +80,7 @@ class ActivityStore:
 
     def list_events(self, limit: int = 50) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 1000))
-        with self._connect() as db:
+        with closing(self._connect()) as db:
             rows = db.execute(
                 "SELECT payload FROM events ORDER BY timestamp DESC LIMIT ?",
                 (limit,),

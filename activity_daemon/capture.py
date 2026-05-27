@@ -138,12 +138,14 @@ class ScreenCapture:
         except Exception as error:
             return {"enabled": True, "available": False, "permission_required": False, "last_error": str(error)}
 
-    def _save_screenshot(self, sct: Any, region: dict[str, int], prefix: str) -> dict[str, Any]:
+    def _save_screenshot(self, sct: Any, region: dict[str, int], prefix: str, output_dir: Path | None = None) -> dict[str, Any]:
         from mss.tools import to_png
 
+        image_dir = output_dir or self.images_dir
+        image_dir.mkdir(parents=True, exist_ok=True)
         screenshot = sct.grab(region)
         timestamp = int(time.time() * 1000)
-        path = self.images_dir / f"{prefix}_{timestamp}.png"
+        path = image_dir / f"{prefix}_{timestamp}.png"
         to_png(screenshot.rgb, screenshot.size, output=str(path))
         return {"path": str(path), "region": region, "width": screenshot.size[0], "height": screenshot.size[1]}
 
@@ -153,6 +155,7 @@ class ScreenCapture:
         drag_start: tuple[int, int] | None = None,
         drag_end: tuple[int, int] | None = None,
         include_base64: bool = False,
+        output_dir: Path | None = None,
     ) -> dict[str, Any]:
         import mss
 
@@ -161,7 +164,7 @@ class ScreenCapture:
             screen = sct.monitors[0]
             if mouse_position:
                 cursor_region = get_cursor_region(mouse_position, self.cursor_crop_size, screen)
-                images["cursor_crop"] = self._save_screenshot(sct, cursor_region, "cursor")
+                images["cursor_crop"] = self._save_screenshot(sct, cursor_region, "cursor", output_dir)
 
             if drag_start and drag_end:
                 search_region = get_search_region(drag_start, drag_end, screen)
@@ -170,11 +173,11 @@ class ScreenCapture:
                 if highlight_bounds:
                     crop_left, crop_top, crop_right, crop_bottom = crop_region_to_highlight(search_region, highlight_bounds)
                     final_region = clamp_region_to_screen(crop_left, crop_top, crop_right, crop_bottom, screen)
-                    images["selection_crop"] = self._save_screenshot(sct, final_region, "selected_text")
+                    images["selection_crop"] = self._save_screenshot(sct, final_region, "selected_text", output_dir)
                     images["selection_crop"]["source"] = "highlight"
                 else:
                     fallback_region = get_drag_fallback_region(drag_start, drag_end, screen)
-                    images["selection_crop"] = self._save_screenshot(sct, fallback_region, "drag_region")
+                    images["selection_crop"] = self._save_screenshot(sct, fallback_region, "drag_region", output_dir)
                     images["selection_crop"]["source"] = "drag_fallback"
 
         if include_base64:

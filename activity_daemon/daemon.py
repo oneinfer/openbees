@@ -33,6 +33,7 @@ class ActivityDaemon:
         self.armed_until = 0.0
         self.last_spoken_input = ""
         self.last_disarm_reason: str | None = None
+        self.last_selection_status: dict[str, Any] | None = None
         self.store = ActivityStore(config.database_path, config.retention_count)
         self.screen_capture = ScreenCapture(config.images_dir, config.cursor_crop_size)
         self.clipboard = ClipboardCollector()
@@ -48,6 +49,7 @@ class ActivityDaemon:
     def start(self) -> None:
         self.config.root.mkdir(parents=True, exist_ok=True)
         self.config.images_dir.mkdir(parents=True, exist_ok=True)
+        self.config.captures_dir.mkdir(parents=True, exist_ok=True)
         if self.config.collectors.clipboard:
             self.clipboard.start()
         if self.config.collectors.mouse:
@@ -62,6 +64,8 @@ class ActivityDaemon:
                 is_armed_callback=self.get_capture_armed,
                 stop_event=self.stop_event,
             )
+            if self.config.preload_asr_model:
+                self.speech.preload_model()
             self.speech.start()
 
     def stop(self) -> None:
@@ -72,12 +76,22 @@ class ActivityDaemon:
             self.speech.stop()
 
     def health(self) -> dict[str, Any]:
+        with self.state_lock:
+            armed_remaining_seconds = max(0.0, self.armed_until - time.monotonic()) if self.capture_armed else 0.0
+            last_spoken_input = self.last_spoken_input
+            last_disarm_reason = self.last_disarm_reason
+            last_selection_status = self.last_selection_status
         return {
             "status": "stopping" if self.stop_event.is_set() else "ok",
             "version": "0.1.0",
             "platform": self.platform_payload(),
             "armed": self.get_capture_armed(),
+            "armed_remaining_seconds": round(armed_remaining_seconds, 2),
+            "last_spoken_input": last_spoken_input,
+            "last_disarm_reason": last_disarm_reason,
+            "last_selection_status": last_selection_status,
             "data_dir": str(self.config.root),
+            "captures_dir": str(self.config.captures_dir),
             "collectors": {
                 "screenshot": self._collector_status(self.config.collectors.screenshot, self.screen_capture.availability()),
                 "mouse": self._collector_status(self.config.collectors.mouse, self.input_events.availability()),
@@ -147,10 +161,24 @@ class ActivityDaemon:
             is_armed = self.capture_armed and time.monotonic() <= self.armed_until
             self.capture_armed = False
             self.armed_until = 0.0
+            self.last_selection_status = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "start": {"x": start_pos[0], "y": start_pos[1]},
+                "end": {"x": end_pos[0], "y": end_pos[1]},
+                "accepted": is_armed,
+                "reason": "accepted" if is_armed else "ignored because capture was not armed or had timed out",
+            }
         if not is_armed:
+            print(f"[activity-daemon] ignored drag selection while not armed: {start_pos} -> {end_pos}", flush=True)
             return
-        time.sleep(0.2)
-        self.capture_snapshot(trigger="voice_selection", drag_start=start_pos, drag_end=end_pos)
+        print(f"[activity-daemon] accepted drag selection: {start_pos} -> {end_pos}", flush=True)
+        time.sleep(0.35)
+        event = self.capture_snapshot(trigger="voice_selection", drag_start=start_pos, drag_end=end_pos)
+        with self.state_lock:
+            if self.last_selection_status:
+                self.last_selection_status["event_id"] = event["id"]
+                self.last_selection_status["event_json"] = event.get("files", {}).get("event_json")
+                self.last_selection_status["selection_text_length"] = len(event.get("text", {}).get("selection_text", ""))
 
     def capture_snapshot(
         self,
@@ -159,6 +187,14 @@ class ActivityDaemon:
         drag_end: tuple[int, int] | None = None,
         include_base64: bool | None = None,
     ) -> dict[str, Any]:
+        event_id = str(uuid.uuid4())
+        event_time = datetime.now(timezone.utc)
+        artifact_dir = self._artifact_dir(event_time, event_id)
+        images_dir = artifact_dir / "images"
+        event_json_path = artifact_dir / "event.json"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        images_dir.mkdir(parents=True, exist_ok=True)
+
         mouse_position = drag_end or self.input_events.current_position()
         include_base64 = self.config.include_base64_by_default if include_base64 is None else include_base64
 
@@ -166,7 +202,7 @@ class ActivityDaemon:
         images: dict[str, Any] = {"cursor_crop": None, "selection_crop": None}
         if self.config.collectors.screenshot:
             try:
-                images = self.screen_capture.capture_context_images(mouse_position, drag_start, drag_end, include_base64)
+                images = self.screen_capture.capture_context_images(mouse_position, drag_start, drag_end, include_base64, images_dir)
                 privacy["captured"]["images"] = True
             except Exception as error:
                 privacy["captured"]["images"] = False
@@ -204,9 +240,15 @@ class ActivityDaemon:
         with self.state_lock:
             spoken_input = self.last_spoken_input
 
+        selection_text = selected_text_snapshot.get("selection_text", "")
+        selection_text_source = selected_text_snapshot.get("method")
+        if not selection_text and not (drag_start and drag_end):
+            selection_text = clipboard_snapshot.get("primary_selection_text") or clipboard_snapshot.get("clipboard_text", "")
+            selection_text_source = "primary_selection" if clipboard_snapshot.get("primary_selection_text") else "clipboard"
+
         event = {
-            "id": str(uuid.uuid4()),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "id": event_id,
+            "timestamp": event_time.isoformat(),
             "trigger": trigger,
             "platform": self.platform_payload(),
             "spoken_input": spoken_input,
@@ -219,19 +261,37 @@ class ActivityDaemon:
             },
             "text": {
                 "clipboard_text": clipboard_snapshot.get("clipboard_text", ""),
-                "selection_text": selected_text_snapshot.get("selection_text") or clipboard_snapshot.get("primary_selection_text") or clipboard_snapshot.get("clipboard_text", ""),
-                "selection_text_source": selected_text_snapshot.get("method") or ("primary_selection" if clipboard_snapshot.get("primary_selection_text") else "clipboard"),
+                "selection_text": selection_text,
+                "selection_text_source": selection_text_source,
                 "selection_clipboard_restored": selected_text_snapshot.get("clipboard_restored", False),
+                "selection_copy_error": selected_text_snapshot.get("last_error"),
                 "primary_selection_text": clipboard_snapshot.get("primary_selection_text", ""),
                 "hover_text": accessibility_snapshot.get("hover_text", ""),
                 "focused_text": accessibility_snapshot.get("focused_text", ""),
             },
             "images": images,
+            "files": {
+                "artifact_dir": str(artifact_dir),
+                "event_json": str(event_json_path),
+                "images_dir": str(images_dir),
+            },
             "privacy": privacy,
         }
+        self._write_event_json(event, event_json_path)
         self.store.add_event(event)
         self._broadcast(event)
         return event
+
+    def _artifact_dir(self, event_time: datetime, event_id: str):
+        folder_name = f"{event_time.strftime('%Y%m%dT%H%M%S%fZ')}_{event_id[:8]}"
+        return self.config.captures_dir / folder_name
+
+    def _write_event_json(self, event: dict[str, Any], path) -> None:
+        try:
+            with path.open("w", encoding="utf-8") as f:
+                json.dump(event, f, ensure_ascii=False, indent=2)
+        except Exception as error:
+            event["privacy"]["unavailable"]["event_json"] = str(error)
 
     def context_payload(self, event: dict[str, Any]) -> dict[str, Any]:
         return build_context_payload(event)
@@ -328,12 +388,15 @@ class ActivityRequestHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw)))
-        self._send_cors_headers()
-        self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self._send_cors_headers()
+            self.end_headers()
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
 
     def _send_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -350,15 +413,25 @@ class ActivityRequestHandler(BaseHTTPRequestHandler):
         try:
             latest = self.daemon_ref.store.latest()
             if latest:
-                self.wfile.write(f"event: snapshot\ndata: {json.dumps(latest, ensure_ascii=False)}\n\n".encode("utf-8"))
-                self.wfile.flush()
+                try:
+                    self.wfile.write(f"event: snapshot\ndata: {json.dumps(latest, ensure_ascii=False)}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    return
             while not self.daemon_ref.stop_event.is_set():
                 try:
                     event = client_queue.get(timeout=15)
                     self.wfile.write(f"event: snapshot\ndata: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8"))
                 except queue.Empty:
                     self.wfile.write(b": keep-alive\n\n")
-                self.wfile.flush()
+                try:
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    return
+                except OSError:
+                    return
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
         finally:
             self.daemon_ref.remove_sse_client(client_queue)
 
