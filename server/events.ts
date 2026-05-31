@@ -34,6 +34,10 @@ export function addClient(res: Response) {
   startKeepalive();
 }
 
+export function clientCount(): number {
+  return clients.size;
+}
+
 function writeEvent(res: Response, event: BoardEvent): boolean {
   const data = `data: ${JSON.stringify(event)}\n\n`;
   try {

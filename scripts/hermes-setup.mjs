@@ -71,6 +71,11 @@ function findPythonForAgentDir(agentDir) {
   return pythonCandidatesForAgentDir(agentDir).find((candidate) => existingFile(candidate)) ?? null;
 }
 
+function createDiscovery(agentDir, source) {
+  const python = findPythonForAgentDir(agentDir);
+  return python ? { agentDir, python, hermesHome: inferHermesHome(agentDir), source } : null;
+}
+
 function inferHermesHome(agentDir) {
   const normalized = resolve(agentDir);
   const parent = dirname(normalized);
@@ -219,7 +224,7 @@ function scanForAgentDirs(roots, maxDepth = 7, maxEntries = 75_000) {
   return found;
 }
 
-function discoverHermes({ fullScan = false } = {}) {
+function agentDirCandidates({ fullScan = false } = {}) {
   const cliCandidate = resolveAgentDirFromHermesCli();
   const directCandidates = unique([
     ...envCandidates(),
@@ -227,31 +232,64 @@ function discoverHermes({ fullScan = false } = {}) {
     ...commonCandidates(),
   ]);
 
+  const candidates = [];
   for (const candidate of directCandidates) {
     const dir = existingDirectory(candidate);
     if (dir && hasHermesSource(dir)) {
-      const python = findPythonForAgentDir(dir);
-      if (python) return { agentDir: dir, python, hermesHome: inferHermesHome(dir), source: 'detected' };
+      candidates.push({ agentDir: dir, source: 'detected' });
     }
   }
 
   if (fullScan) {
     for (const dir of scanForAgentDirs(fullScanRoots())) {
-      const python = findPythonForAgentDir(dir);
-      if (python) return { agentDir: dir, python, hermesHome: inferHermesHome(dir), source: 'scan' };
+      candidates.push({ agentDir: dir, source: 'scan' });
     }
+  }
+
+  return unique(candidates.map(({ agentDir }) => agentDir))
+    .map((agentDir) => candidates.find((candidate) => candidate.agentDir === agentDir));
+}
+
+function discoverHermes({ fullScan = false } = {}) {
+  for (const candidate of agentDirCandidates({ fullScan })) {
+    const discovery = createDiscovery(candidate.agentDir, candidate.source);
+    if (discovery) return discovery;
   }
 
   return null;
 }
 
-function installHermes() {
+function discoverHermesSource({ fullScan = false } = {}) {
+  return agentDirCandidates({ fullScan })[0] ?? null;
+}
+
+function powershellQuote(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function installHermes({ agentDir, hermesHome } = {}) {
   if (process.env.BEES_SKIP_HERMES_INSTALL === '1') {
     console.warn('[hermes-setup] Hermes install skipped because BEES_SKIP_HERMES_INSTALL=1.');
     return false;
   }
 
-  console.log('[hermes-setup] Hermes was not found. Running the official Hermes installer...');
+  console.log(
+    agentDir
+      ? `[hermes-setup] Hermes source found without a venv. Creating/updating venv at ${join(agentDir, 'venv')}...`
+      : '[hermes-setup] Hermes was not found. Running the official Hermes installer...',
+  );
+
+  const env = {
+    ...process.env,
+    ...(agentDir ? { HERMES_INSTALL_DIR: agentDir } : {}),
+    ...(hermesHome ? { HERMES_HOME: hermesHome } : {}),
+  };
+  const windowsArgs = [
+    '-SkipSetup',
+    '-NonInteractive',
+    ...(agentDir ? ['-InstallDir', powershellQuote(agentDir)] : []),
+    ...(hermesHome ? ['-HermesHome', powershellQuote(hermesHome)] : []),
+  ].join(' ');
   const command = isWindows()
     ? {
         file: 'powershell.exe',
@@ -260,7 +298,7 @@ function installHermes() {
           '-ExecutionPolicy',
           'Bypass',
           '-Command',
-          `$script = irm ${HERMES_INSTALL_PS1_URL}; & ([scriptblock]::Create($script)) -SkipSetup -NonInteractive`,
+          `$script = irm ${HERMES_INSTALL_PS1_URL}; & ([scriptblock]::Create($script)) ${windowsArgs}`,
         ],
       }
     : {
@@ -270,7 +308,7 @@ function installHermes() {
 
   const result = spawnSync(command.file, command.args, {
     stdio: 'inherit',
-    env: process.env,
+    env,
   });
 
   if (result.error) throw result.error;
@@ -332,7 +370,8 @@ export function ensureHermesEnvironment(options = {}) {
 
   let discovery = discoverHermes({ fullScan });
   if (!discovery && installIfMissing) {
-    installHermes();
+    const source = discoverHermesSource({ fullScan });
+    installHermes(source ? { agentDir: source.agentDir, hermesHome: inferHermesHome(source.agentDir) } : {});
     discovery = discoverHermes({ fullScan: true });
   }
 

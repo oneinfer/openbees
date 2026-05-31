@@ -25,6 +25,7 @@ const stmtInsertProject = db.prepare(`
 const stmtAllTasks = db.prepare('SELECT * FROM tasks ORDER BY updated_at DESC');
 const stmtTasksByStatus = db.prepare('SELECT * FROM tasks WHERE status = ? ORDER BY updated_at DESC');
 const stmtGetTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
+const stmtRecentTaskByDescription = db.prepare('SELECT * FROM tasks WHERE description = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 1');
 const stmtTaskIdsByWorkspacePath = db.prepare('SELECT id FROM tasks WHERE workspace_path = ?');
 const stmtInsertTask = db.prepare(`
   INSERT INTO tasks (
@@ -71,10 +72,11 @@ export function getProject(path: string): Project | undefined {
 
 export function saveProject(project: { path: string; label?: string | null }): Project {
   const now = Date.now();
+  const existing = getProject(project.path);
   stmtInsertProject.run({
     path: project.path,
-    label: project.label ?? null,
-    created_at: getProject(project.path)?.created_at ?? now,
+    label: project.label ?? existing?.label ?? null,
+    created_at: existing?.created_at ?? now,
     updated_at: now,
   });
   return getProject(project.path) as Project;
@@ -96,6 +98,10 @@ export function getAllTasks(status?: TaskStatus): Task[] {
 
 export function getTask(id: string): Task | undefined {
   return stmtGetTask.get(id) as Task | undefined;
+}
+
+export function getRecentTaskByDescription(description: string, since: number): Task | undefined {
+  return stmtRecentTaskByDescription.get(description, since) as Task | undefined;
 }
 
 export function insertTask(task: {

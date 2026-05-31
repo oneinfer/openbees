@@ -5,6 +5,8 @@ import type {
   AgentRuntimeInstallResponse,
   AgentRuntimesResponse,
   AgentRunSettings,
+  AsrStatusResponse,
+  AsrTranscriptionResponse,
   CronJob,
   CronRun,
   FileCreateResponse,
@@ -83,6 +85,17 @@ export function fetchProjects() {
   return request<{ projects: Project[] }>('/projects');
 }
 
+export function fetchCurrentProject() {
+  return request<{ workspacePath: string | null }>('/projects/current');
+}
+
+export function updateCurrentProject(workspacePath: string | null) {
+  return request<{ workspacePath: string | null; project: Project | null }>('/projects/current', {
+    method: 'PUT',
+    body: JSON.stringify({ workspacePath }),
+  });
+}
+
 export function createProject(workspacePath: string) {
   return request<{ project: Project }>('/projects', {
     method: 'POST',
@@ -134,6 +147,7 @@ export function createTask(
   taskMode?: TaskMode,
   attachments?: File[],
   taskKind?: TaskKind,
+  start?: boolean,
 ) {
   if (attachments?.length) {
     const formData = new FormData();
@@ -145,6 +159,7 @@ export function createTask(
     appendOptionalFormValue(formData, 'reasoningEffort', reasoningEffort);
     appendOptionalFormValue(formData, 'taskMode', taskMode);
     appendOptionalFormValue(formData, 'taskKind', taskKind);
+    if (start !== undefined) formData.append('start', String(start));
     for (const attachment of attachments) {
       formData.append('attachments', attachment, attachment.name);
     }
@@ -157,7 +172,7 @@ export function createTask(
 
   return request<{ task: Task }>('/tasks', {
     method: 'POST',
-    body: JSON.stringify({ description, title, workspacePath, runtime, model, reasoningEffort, taskMode, taskKind }),
+    body: JSON.stringify({ description, title, workspacePath, runtime, model, reasoningEffort, taskMode, taskKind, start }),
   });
 }
 
@@ -170,7 +185,37 @@ export function fetchSession(taskId: string) {
 }
 
 export function fetchHealth() {
-  return request<{ ok: boolean; hermes: boolean; runtimes: Record<AgentRuntime, boolean> }>('/health');
+  return request<{ ok: boolean; hermes: boolean; runtimes: Record<AgentRuntime, boolean>; asr: AsrStatusResponse }>('/health');
+}
+
+export function fetchAsrStatus() {
+  return request<AsrStatusResponse>('/asr/status');
+}
+
+export function transcribeAudio(audio: Blob, language?: string) {
+  const formData = new FormData();
+  const extension = audio.type.includes('wav') ? 'wav' : audio.type.includes('ogg') ? 'ogg' : 'webm';
+  formData.append('audio', audio, `speech.${extension}`);
+  appendOptionalFormValue(formData, 'language', language);
+
+  return request<AsrTranscriptionResponse>('/asr/transcribe', {
+    method: 'POST',
+    body: formData,
+  });
+}
+
+export function suppressActivitySpeechInput(reason = 'browser voice input', ttlSeconds = 180) {
+  return request<{ token: string; suppressed: boolean; lease_count: number; ttl_seconds: number }>('/activity/speech/suppress', {
+    method: 'POST',
+    body: JSON.stringify({ reason, ttl_seconds: ttlSeconds }),
+  });
+}
+
+export function releaseActivitySpeechInput(token?: string | null) {
+  return request<{ suppressed: boolean; lease_count: number }>('/activity/speech/release', {
+    method: 'POST',
+    body: JSON.stringify(token ? { token } : {}),
+  });
 }
 
 export function fetchAgentDefaults() {

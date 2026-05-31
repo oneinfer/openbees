@@ -1,10 +1,12 @@
 import { useEffect, useRef } from 'react';
 import type { BoardEvent } from '@shared/types';
 import { useStore } from '../lib/store';
-import { fetchProjects, fetchTasks } from '../lib/api';
+import { fetchCurrentProject, fetchProjects, fetchTasks } from '../lib/api';
+import { announceTaskCreated } from '../lib/taskNotification';
 
 export function useTasks() {
   const setProjects = useStore((s) => s.setProjects);
+  const setCurrentProjectPath = useStore((s) => s.setCurrentProjectPath);
   const upsertProject = useStore((s) => s.upsertProject);
   const removeProject = useStore((s) => s.removeProject);
   const setTasks = useStore((s) => s.setTasks);
@@ -21,6 +23,15 @@ export function useTasks() {
   useEffect(() => {
     fetchProjects().then((res) => setProjects(res.projects)).catch(console.error);
   }, [setProjects]);
+
+  useEffect(() => {
+    fetchCurrentProject()
+      .then((res) => setCurrentProjectPath(res.workspacePath))
+      .catch((error) => {
+        console.error(error);
+        setCurrentProjectPath(useStore.getState().currentProjectPath);
+      });
+  }, [setCurrentProjectPath]);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -44,6 +55,10 @@ export function useTasks() {
           const event = JSON.parse(e.data) as BoardEvent;
           if (event.type === 'task_created' || event.type === 'task_updated') {
             upsertTask(event.task);
+            if (event.type === 'task_created') {
+              const verb = event.task.status === 'in_progress' ? 'created and started in In Progress' : 'created';
+              announceTaskCreated(`Task has been ${verb}: ${event.task.title}`, event.task.id);
+            }
           } else if (event.type === 'task_deleted') {
             removeTask(event.taskId);
           } else if (event.type === 'project_saved') {
