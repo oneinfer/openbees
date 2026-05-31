@@ -155,18 +155,24 @@ class ScreenCapture:
         drag_start: tuple[int, int] | None = None,
         drag_end: tuple[int, int] | None = None,
         include_base64: bool = False,
+        include_full_screen: bool = False,
+        include_cursor_crop: bool = True,
+        include_selection_crop: bool = True,
         output_dir: Path | None = None,
     ) -> dict[str, Any]:
         import mss
 
-        images: dict[str, Any] = {"cursor_crop": None, "selection_crop": None}
+        images: dict[str, Any] = {"cursor_crop": None, "selection_crop": None, "screenshot": None}
         with mss.MSS() as sct:
             screen = sct.monitors[0]
-            if mouse_position:
+            if include_full_screen:
+                images["screenshot"] = self._save_screenshot(sct, screen, "screenshot", output_dir)
+
+            if include_cursor_crop and mouse_position:
                 cursor_region = get_cursor_region(mouse_position, self.cursor_crop_size, screen)
                 images["cursor_crop"] = self._save_screenshot(sct, cursor_region, "cursor", output_dir)
 
-            if drag_start and drag_end:
+            if include_selection_crop and drag_start and drag_end:
                 search_region = get_search_region(drag_start, drag_end, screen)
                 search_screenshot = sct.grab(search_region)
                 highlight_bounds = find_highlight_bounds(search_screenshot)

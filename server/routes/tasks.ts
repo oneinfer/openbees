@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { deleteTask, getAllTasks, getTask, insertTask, markTaskViewed, updateTask } from '../db/queries.js';
+import { deleteTask, getAllTasks, getRecentTaskByDescription, getTask, insertTask, markTaskViewed, saveProject, setAppSetting, updateTask } from '../db/queries.js';
 import { parseRunSettingsBody } from '../agent-settings.js';
 import { broadcast } from '../events.js';
 import { toErrorMessage } from '../errors.js';
@@ -11,8 +11,9 @@ import {
 import { defaultRuntime, parseRuntimeValue } from '../runtime-config.js';
 import { startTaskRun } from '../task-runner.js';
 import { parseWorkspacePath } from '../workspace-access.js';
+import { CURRENT_PROJECT_SETTING_KEY } from './projects.js';
 import { TASK_KINDS, TASK_MODES, TASK_STATUSES } from '../../shared/types.js';
-import type { TaskKind, TaskMode, TaskStatus } from '../../shared/types.js';
+import type { Task, TaskKind, TaskMode, TaskStatus } from '../../shared/types.js';
 import {
   appendAttachmentContext,
   attachmentUploadMiddleware,
@@ -25,6 +26,7 @@ import { enrichImageAttachmentContext } from '../image-context.js';
 export const tasksRouter = Router();
 
 const LOW_INFORMATION_TITLES = new Set(['?', 'hi', 'hello', 'hey', 'yo']);
+const RECENT_TASK_DEDUPE_MS = 10_000;
 
 tasksRouter.get('/', (req, res) => {
   const status = req.query.status as TaskStatus | undefined;
@@ -65,10 +67,66 @@ function parseTaskKind(value: unknown): TaskKind {
   return value as TaskKind;
 }
 
+function parseBooleanFlag(value: unknown, fieldName: string): boolean {
+  if (value === undefined || value === null || value === '') return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') throw new Error(`${fieldName} must be a boolean`);
+
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  throw new Error(`${fieldName} must be a boolean`);
+}
+
+function startTaskImmediately(task: Task): Task {
+  const started = updateTask(task.id, { status: 'in_progress' }) ?? task;
+
+  if (started.task_mode === 'plan') {
+    startTaskRun(
+      started,
+      buildTaskPlanningRequest({ title: started.title, description: started.description }),
+      {
+        systemMessage: buildTaskPlanningSystemPrompt({
+          title: started.title,
+          description: started.description,
+          workspacePath: started.workspace_path,
+        }),
+      },
+    );
+    return started;
+  }
+
+  startTaskRun(started, started.description ?? started.title);
+  return started;
+}
+
 tasksRouter.post('/', attachmentUploadMiddleware, async (req, res) => {
   const { description, title } = req.body;
   if (!description || typeof description !== 'string') {
     return res.status(400).json({ error: 'description is required' });
+  }
+
+  let shouldStart: boolean;
+  try {
+    shouldStart = parseBooleanFlag(req.body.start ?? req.body.startImmediately ?? req.body.run, 'start');
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid task settings' });
+  }
+
+  const recentDuplicate = getRecentTaskByDescription(description, Date.now() - RECENT_TASK_DEDUPE_MS);
+  if (recentDuplicate) {
+    if (shouldStart && recentDuplicate.status === 'pending') {
+      try {
+        const started = startTaskImmediately(recentDuplicate);
+        broadcast({ type: 'task_updated', task: started });
+        return res.status(200).json({ task: started, duplicate: true });
+      } catch (error) {
+        return res.status(409).json({
+          error: toErrorMessage(error, 'Task already exists but could not be activated'),
+        });
+      }
+    }
+    return res.status(200).json({ task: recentDuplicate, duplicate: true });
   }
 
   let workspacePath: string | null | undefined;
@@ -116,9 +174,27 @@ tasksRouter.post('/', attachmentUploadMiddleware, async (req, res) => {
     await cleanupUploadedAttachments(files);
   }
 
+  if (task.workspace_path) {
+    const project = saveProject({ path: task.workspace_path });
+    setAppSetting(CURRENT_PROJECT_SETTING_KEY, task.workspace_path);
+    broadcast({ type: 'project_saved', project });
+  }
+
+  if (shouldStart) {
+    try {
+      task = startTaskImmediately(task);
+    } catch (error) {
+      const reverted = updateTask(task.id, { status: 'pending' }) ?? task;
+      broadcast({ type: 'task_created', task: reverted });
+      return res.status(409).json({
+        error: toErrorMessage(error, 'Task was created but could not be activated'),
+      });
+    }
+  }
+
   broadcast({ type: 'task_created', task });
 
-  if (task.task_mode === 'plan') {
+  if (!shouldStart && task.task_mode === 'plan') {
     try {
       startTaskRun(
         task,

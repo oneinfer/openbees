@@ -2,8 +2,11 @@ import 'dotenv/config';
 import './db/index.js';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import app, { agents, qwenAsr } from './app.js';
+import app, { activityDaemon, agents, qwenAsr } from './app.js';
+import { openBrowserForDev } from './browser-opener.js';
+import { getAppSetting } from './db/queries.js';
 import { mountFrontend, type FrontendCleanup } from './frontend.js';
+import { CURRENT_PROJECT_SETTING_KEY } from './routes/projects.js';
 import { ensureBundledSkillsLinked } from './skills/catalog.js';
 
 const PORT = parseInt(process.env.PORT || '6969', 10);
@@ -16,11 +19,19 @@ type ShutdownReason = NodeJS.Signals | 'startup-error';
 
 async function main() {
   ensureBundledSkillsLinked();
+  await activityDaemon.start();
   closeFrontend = await mountFrontend(app, httpServer);
   httpServer.listen(PORT);
   await once(httpServer, 'listening');
 
-  console.log(`Hermes Agent Mission Control running on http://localhost:${PORT}`);
+  const url = `http://localhost:${PORT}`;
+  const currentProjectPath = getAppSetting(CURRENT_PROJECT_SETTING_KEY);
+  const startupUrl = currentProjectPath
+    ? `${url}/projects?path=${encodeURIComponent(currentProjectPath)}`
+    : url;
+  console.log(`Hermes Agent Mission Control running on ${url}`);
+  openBrowserForDev(startupUrl);
+  activityDaemon.openUiOnWake(startupUrl);
 
   if (qwenAsr.enabled() && process.env.QWEN_ASR_PRELOAD?.trim().toLowerCase() === 'true') {
     console.log('Loading Qwen ASR model...');
@@ -68,6 +79,7 @@ async function shutdown(reason: ShutdownReason, exitCode = 0): Promise<void> {
     closeFrontend(),
     agents.stop(),
     qwenAsr.stop(),
+    activityDaemon.stop(),
   ]);
 
   for (const result of results) {

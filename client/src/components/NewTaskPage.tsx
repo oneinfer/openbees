@@ -7,19 +7,22 @@ import {
   AttachmentPicker,
   AttachmentPreviewList,
   composerAttachmentsFromClipboard,
+  createComposerAttachments,
   type ComposerAttachment,
 } from './AttachmentPicker';
-import { createTask, moveTask, pickWorkspaceDirectory } from '../lib/api';
+import { createTask, pickWorkspaceDirectory, updateCurrentProject } from '../lib/api';
+import { clearActivityTaskDraft, loadActivityTaskDraft } from '../lib/activityDraft';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { isEditableTarget, handleChatKeyDown } from '../lib/keyboard';
 import { toErrorMessage } from '../lib/format';
-import { projectHref } from '../lib/projects';
+import { useStore } from '../lib/store';
+import { announceTaskCreated, primeTaskCreatedSound } from '../lib/taskNotification';
 
 export function NewTaskPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const requestedWorkspacePath = searchParams.get('workspacePath')?.trim() ?? '';
-  const requestedStatus = searchParams.get('status') === 'in_progress' ? 'in_progress' : null;
+  const activityDraftId = searchParams.get('activityDraft');
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [workspacePath, setWorkspacePath] = useState(() => {
@@ -31,8 +34,14 @@ export function NewTaskPage() {
   const [isPickingWorkspace, setIsPickingWorkspace] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [isApplyingActivityDraft, setIsApplyingActivityDraft] = useState(false);
+  const [activityDraftAutoSubmitId, setActivityDraftAutoSubmitId] = useState<string | null>(null);
+  const currentProjectPath = useStore((s) => s.currentProjectPath);
+  const setCurrentProjectPath = useStore((s) => s.setCurrentProjectPath);
+  const upsertProject = useStore((s) => s.upsertProject);
   const { defaults, runtimeOptions, runtime, setRuntime, modelGroups, runtimeDefaultModel, model, setModel, reasoningEffort, setReasoningEffort, isLoading } = useAgentConfig();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const appliedCurrentProjectRef = useRef(false);
   const normalizedWorkspacePath = workspacePath.trim();
 
   useEffect(() => {
@@ -40,10 +49,51 @@ export function NewTaskPage() {
   }, []);
 
   useEffect(() => {
+    if (!activityDraftId) return;
+    const draft = loadActivityTaskDraft(activityDraftId);
+    if (!draft) return;
+    let cancelled = false;
+    setIsApplyingActivityDraft(true);
+
+    if (draft.text?.trim()) {
+      setInput((current) => {
+        const text = draft.text?.trim() ?? '';
+        if (!current.trim()) return text;
+        if (current.includes(text)) return current;
+        return `${current.trimEnd()}\n\n${text}`;
+      });
+    }
+
+    void (async () => {
+      if (draft.imagePath) {
+        const file = await loadActivityScreenshot(draft.imagePath, draft.imageName);
+        if (!cancelled && file) {
+          setAttachments((current) => [...current, ...createComposerAttachments([file])]);
+        }
+      }
+
+      if (cancelled) return;
+      clearActivityTaskDraft(draft.id);
+      setActivityDraftAutoSubmitId(draft.id);
+      setIsApplyingActivityDraft(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activityDraftId]);
+
+  useEffect(() => {
     if (!requestedWorkspacePath) return;
     setWorkspacePath(requestedWorkspacePath);
     setWorkspaceError(null);
   }, [requestedWorkspacePath]);
+
+  useEffect(() => {
+    if (requestedWorkspacePath || appliedCurrentProjectRef.current || workspacePath.trim() || !currentProjectPath) return;
+    appliedCurrentProjectRef.current = true;
+    setWorkspacePath(currentProjectPath);
+  }, [currentProjectPath, requestedWorkspacePath, workspacePath]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -57,6 +107,7 @@ export function NewTaskPage() {
     const text = input.trim();
     const files = attachments.map((attachment) => attachment.file);
     if ((!text && files.length === 0) || isCreating || (!defaults && isLoading)) return;
+    primeTaskCreatedSound();
     setIsCreating(true);
     setWorkspaceError(null);
     try {
@@ -69,19 +120,32 @@ export function NewTaskPage() {
         reasoningEffort,
         planModeEnabled ? 'plan' : 'direct',
         files,
+        'task',
+        true,
       );
-      const task = requestedStatus === 'in_progress'
-        ? (await moveTask(created.task.id, 'in_progress')).task
-        : created.task;
-      if (normalizedWorkspacePath) localStorage.setItem('bees:lastWorkspacePath', normalizedWorkspacePath);
-      else localStorage.removeItem('bees:lastWorkspacePath');
-      if (requestedStatus === 'in_progress') navigate(`/tasks/${task.id}`);
-      else navigate(normalizedWorkspacePath ? projectHref(normalizedWorkspacePath) : '/');
+      const task = created.task;
+      announceTaskCreated(`Task has been created and started in In Progress: ${task.title}`, task.id);
+      if (normalizedWorkspacePath) {
+        setCurrentProjectPath(normalizedWorkspacePath);
+        void updateCurrentProject(normalizedWorkspacePath)
+          .then((result) => {
+            if (result.project) upsertProject(result.project);
+          })
+          .catch(console.error);
+      }
+      navigate(`/tasks/${task.id}`);
     } catch (error) {
       setWorkspaceError(toErrorMessage(error, 'Failed to create task'));
       setIsCreating(false);
     }
-  }, [attachments, defaults, input, isCreating, isLoading, model, navigate, normalizedWorkspacePath, planModeEnabled, reasoningEffort, requestedStatus, runtime]);
+  }, [attachments, defaults, input, isCreating, isLoading, model, navigate, normalizedWorkspacePath, planModeEnabled, reasoningEffort, runtime, setCurrentProjectPath, upsertProject]);
+
+  useEffect(() => {
+    if (!activityDraftAutoSubmitId || isApplyingActivityDraft || isCreating) return;
+    if (!input.trim() && attachments.length === 0) return;
+    setActivityDraftAutoSubmitId(null);
+    void handleSubmit();
+  }, [activityDraftAutoSubmitId, attachments.length, handleSubmit, input, isApplyingActivityDraft, isCreating]);
 
   const handleChooseWorkspace = useCallback(async () => {
     if (isPickingWorkspace || isCreating) return;
@@ -90,18 +154,31 @@ export function NewTaskPage() {
 
     try {
       const result = await pickWorkspaceDirectory(normalizedWorkspacePath || null);
-      if (result.path) setWorkspacePath(result.path);
+      if (result.path) {
+        setWorkspacePath(result.path);
+        setCurrentProjectPath(result.path);
+        void updateCurrentProject(result.path)
+          .then((current) => {
+            if (current.project) upsertProject(current.project);
+          })
+          .catch(console.error);
+      }
     } catch (error) {
       setWorkspaceError(toErrorMessage(error, 'Failed to open folder picker'));
     } finally {
       setIsPickingWorkspace(false);
     }
-  }, [isCreating, isPickingWorkspace, normalizedWorkspacePath]);
+  }, [isCreating, isPickingWorkspace, normalizedWorkspacePath, setCurrentProjectPath, upsertProject]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => handleChatKeyDown(e, handleSubmit),
     [handleSubmit],
   );
+
+  const handleFormSubmit = useCallback((event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void handleSubmit();
+  }, [handleSubmit]);
 
   const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     if (isCreating) return;
@@ -138,7 +215,7 @@ export function NewTaskPage() {
         What do you need done?
       </h1>
 
-      <div className="w-full max-w-4xl">
+      <form className="w-full max-w-4xl" onSubmit={handleFormSubmit}>
         <div className="rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-sm overflow-hidden">
           {normalizedWorkspacePath && (
             <div className="border-b border-zinc-100 bg-zinc-50/70 px-5 py-3 dark:border-zinc-700/70 dark:bg-zinc-900/40">
@@ -233,9 +310,12 @@ export function NewTaskPage() {
               </button>
             </div>
             <button
-              onClick={handleSubmit}
+              type="submit"
               disabled={(!input.trim() && attachments.length === 0) || isCreating || (!defaults && isLoading)}
               className="p-2.5 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 disabled:opacity-30 hover:bg-zinc-700 dark:hover:bg-zinc-300 transition-colors"
+              aria-label="Create and start task"
+              title="Create and start task"
+              data-testid="create-start-task-button"
             >
               {isCreating ? (
                 <Loader2 size={16} className="animate-spin" />
@@ -261,10 +341,26 @@ export function NewTaskPage() {
         </div>
         <p className="text-xs text-zinc-400 dark:text-zinc-500 text-center mt-3">
           {planModeEnabled
-            ? 'Plan mode writes the plan first, keeps the task in Pending, and waits for you to move it to In Progress before execution.'
-            : 'The more context you give, the better your assistant will do.'}
+            ? 'Plan mode creates the task in In Progress and starts the planning run immediately.'
+            : 'Direct mode creates the task and starts execution immediately.'}
         </p>
-      </div>
+      </form>
     </div>
   );
+}
+
+async function loadActivityScreenshot(path: string, name?: string): Promise<File | null> {
+  try {
+    const response = await fetch(`/api/files/view?path=${encodeURIComponent(path)}`);
+    if (!response.ok) return null;
+
+    const blob = await response.blob();
+    const fileName = name || path.split(/[\\/]/).pop() || 'activity-screenshot.png';
+    return new File([blob], fileName, {
+      type: blob.type || 'image/png',
+      lastModified: Date.now(),
+    });
+  } catch {
+    return null;
+  }
 }

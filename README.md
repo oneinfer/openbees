@@ -41,7 +41,7 @@ Bees is not just a task board. After each agent turn, a lightweight completion j
 
 ## Quick Start
 
-**Prerequisites:** Node.js 20-23 (Node.js 22 LTS recommended). `npm install` and `npm run dev` will detect Hermes Agent, write the discovered `HERMES_AGENT_DIR`, `HERMES_PYTHON`, and `HERMES_HOME` values to local `.env`, and run the official Hermes installer if Hermes is missing.
+**Prerequisites:** Node.js 20-23 (Node.js 22 LTS recommended). `npm install` and `npm run dev` will detect Hermes Agent, write the discovered `HERMES_AGENT_DIR`, `HERMES_PYTHON`, and `HERMES_HOME` values to local `.env`, and run the official Hermes installer if Hermes is missing. `npm install` also prepares the local activity daemon dependencies best-effort, and `npm run dev` starts the daemon with OpenBees.
 
 ```bash
 git clone https://github.com/oneinfer/openbees.git
@@ -66,6 +66,23 @@ By default the setup scans `PATH`, configured env vars, and common Hermes instal
 
 Optional microphone transcription uses Qwen3-ASR. `npm run dev` prepares the local ASR environment automatically if needed. There is no separate ASR service to start; the backend launches the ASR worker on demand when the microphone transcription endpoint is used.
 
+The desktop activity daemon is managed by OpenBees in development. It captures local context only, binds to `127.0.0.1`, and stores data under `~/.bees/activity-daemon` by default. Useful overrides:
+
+```bash
+BEES_ACTIVITY_ENABLED=false
+BEES_SKIP_ACTIVITY_DAEMON_INSTALL=1
+BEES_ACTIVITY_HOST=127.0.0.1
+BEES_ACTIVITY_PORT=4768
+BEES_ACTIVITY_PYTHON=/path/to/python
+BEES_ACTIVITY_DATA_DIR=~/.bees/activity-daemon
+```
+
+You can also prepare or repair its Python dependencies directly:
+
+```bash
+npm run setup:activity
+```
+
 ## How It Works
 
 ```
@@ -74,6 +91,8 @@ Browser (React + Vite)
 Express server (:6969)
   ↕ JSONL stdin/stdout
 Python worker → Hermes AIAgent
+  +
+Managed local activity daemon (:4768)
 ```
 
 Each task is a persistent Hermes root session. You talk to it, it works, and the board reflects where everything stands. Chat transcripts live in Hermes's session database; Bees stores task metadata, status, and per-task settings in a local SQLite database.

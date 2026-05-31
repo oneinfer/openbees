@@ -225,8 +225,8 @@ export function ensureQwenAsrEnvironment(options = {}) {
     QWEN_ASR_MAX_AUDIO_MB: configured('QWEN_ASR_MAX_AUDIO_MB') || '25',
   };
   const exampleValues = {
-    QWEN_ASR_ENABLED: 'false',
-    QWEN_ASR_PYTHON: '',
+    QWEN_ASR_ENABLED: String(enabled),
+    QWEN_ASR_PYTHON: python,
     QWEN_ASR_MODEL: 'Qwen/Qwen3-ASR-0.6B',
     QWEN_ASR_DEVICE: 'cpu',
     QWEN_ASR_DTYPE: 'float32',
