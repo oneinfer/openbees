@@ -144,6 +144,14 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isNoDefaultInputDeviceError(error: unknown): boolean {
+  const message = formatError(error).toLowerCase();
+  return (
+    message.includes('no default input device')
+    || (message.includes('default') && message.includes('input device') && message.includes('available'))
+  );
+}
+
 function selectedText(event: ActivityDaemonEvent): string {
   return event.text?.selection_text?.trim() || '';
 }
@@ -319,9 +327,10 @@ class ActivityDaemonService {
   private processedEventIds = new Set<string>();
   private wakeUiUrl: string | null = null;
   private lastWakeBrowserOpenAt = 0;
+  private runtimeDisabledReason: string | undefined;
 
   enabled(): boolean {
-    return activityEnabled();
+    return activityEnabled() && !this.runtimeDisabledReason;
   }
 
   url(): string {
@@ -335,9 +344,17 @@ class ActivityDaemonService {
     }
 
     if (this.startPromise) return await this.startPromise;
-    this.startPromise = this.startInternal().finally(() => {
-      this.startPromise = null;
-    });
+    this.startPromise = this.startInternal()
+      .catch(async (error) => {
+        if (!isNoDefaultInputDeviceError(error)) throw error;
+        this.runtimeDisabledReason = 'Activity daemon disabled because no default input device is available.';
+        this.lastError = this.runtimeDisabledReason;
+        console.warn(`[activity-daemon] ${this.lastError} Continuing without activity capture.`);
+        await this.stop();
+      })
+      .finally(() => {
+        this.startPromise = null;
+      });
     await this.startPromise;
   }
 
@@ -466,13 +483,14 @@ class ActivityDaemonService {
 
   async status(): Promise<ActivityDaemonStatus> {
     const base = {
-      enabled: this.enabled(),
+      enabled: activityEnabled(),
       available: false,
       managed: this.managed,
       url: this.url(),
     };
 
     if (!base.enabled) return base;
+    if (this.runtimeDisabledReason) return { ...base, error: this.runtimeDisabledReason };
 
     const health = await this.fetchHealth();
     if (health.ok) {
@@ -499,6 +517,7 @@ class ActivityDaemonService {
   }
 
   async request(path: string, init: RequestInit = {}): Promise<Response> {
+    if (this.runtimeDisabledReason) throw new Error(this.runtimeDisabledReason);
     if (!this.enabled()) throw new Error('Activity daemon is disabled. Set BEES_ACTIVITY_ENABLED=true to enable it.');
     return await fetch(`${this.url()}${path}`, init);
   }

@@ -75,6 +75,7 @@ BEES_ACTIVITY_HOST=127.0.0.1
 BEES_ACTIVITY_PORT=4768
 BEES_ACTIVITY_PYTHON=/path/to/python
 BEES_ACTIVITY_DATA_DIR=~/.bees/activity-daemon
+BEES_ACTIVITY_REQUIRE_INPUT_DEVICE=true
 ```
 
 You can also prepare or repair its Python dependencies directly:

@@ -10,6 +10,7 @@ const ACTIVITY_KEYS = [
   'BEES_ACTIVITY_PORT',
   'BEES_ACTIVITY_PYTHON',
   'BEES_ACTIVITY_DATA_DIR',
+  'BEES_ACTIVITY_REQUIRE_INPUT_DEVICE',
 ];
 
 function isWindows() {
@@ -80,6 +81,11 @@ function configuredValue(localEnv, key) {
   return process.env[key]?.trim() || localEnv[key]?.trim();
 }
 
+function envFlagEnabled(value, defaultValue) {
+  if (value === undefined || value.trim() === '') return defaultValue;
+  return !['0', 'false', 'no', 'off'].includes(value.trim().toLowerCase());
+}
+
 function bootstrapPython(localEnv) {
   const configured = configuredValue(localEnv, 'BEES_ACTIVITY_BOOTSTRAP_PYTHON');
   if (configured && existingFile(configured)) return existingFile(configured);
@@ -135,6 +141,110 @@ function run(file, args, options = {}) {
   if (result.status !== 0) {
     throw new Error(`${file} ${args.join(' ')} exited with code ${result.status ?? 'unknown'}`);
   }
+}
+
+function pythonDefaultInputDeviceAvailable(python) {
+  if (!python || !existingFile(python)) return null;
+
+  const script = [
+    'import sys',
+    'try:',
+    '    import speech_recognition as sr',
+    '    sr.Microphone()',
+    '    print("available")',
+    '    sys.exit(0)',
+    'except Exception as error:',
+    '    message = str(error).lower()',
+    '    if "no default input device" in message or ("default" in message and "input device" in message):',
+    '        print("missing")',
+    '        sys.exit(2)',
+    '    print("unknown")',
+    '    sys.exit(3)',
+  ].join('\n');
+
+  const result = spawnSync(python, ['-c', script], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ...pythonEnv(python),
+    },
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 8000,
+  });
+
+  if (result.status === 0 && result.stdout.includes('available')) return true;
+  if (result.status === 2 && result.stdout.includes('missing')) return false;
+  return null;
+}
+
+function windowsDefaultInputDeviceAvailable() {
+  if (!isWindows()) return null;
+
+  const script = String.raw`
+$typeDefinition = @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace BeesAudio {
+  public enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
+  public enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }
+
+  [ComImport]
+  [Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+  public class MMDeviceEnumeratorComObject {}
+
+  [ComImport]
+  [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+  [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IMMDeviceEnumerator {
+    int EnumAudioEndpoints(EDataFlow dataFlow, uint dwStateMask, IntPtr ppDevices);
+    int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out object ppEndpoint);
+    int GetDevice(string pwstrId, IntPtr ppDevice);
+    int RegisterEndpointNotificationCallback(IntPtr pClient);
+    int UnregisterEndpointNotificationCallback(IntPtr pClient);
+  }
+}
+"@
+
+try {
+  Add-Type -TypeDefinition $typeDefinition -ErrorAction Stop | Out-Null
+  $enumerator = [BeesAudio.IMMDeviceEnumerator]([BeesAudio.MMDeviceEnumeratorComObject]::new())
+  $endpoint = $null
+  $hr = $enumerator.GetDefaultAudioEndpoint([BeesAudio.EDataFlow]::eCapture, [BeesAudio.ERole]::eConsole, [ref]$endpoint)
+  if ($hr -eq 0 -and $null -ne $endpoint) { exit 0 }
+  exit 2
+} catch {
+  exit 3
+}
+`;
+
+  const result = spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-Command',
+    script,
+  ], {
+    stdio: 'ignore',
+    timeout: 8000,
+  });
+
+  if (result.status === 0) return true;
+  if (result.status === 2) return false;
+  return null;
+}
+
+function defaultInputDeviceAvailable(localEnv, python) {
+  if (!envFlagEnabled(configuredValue(localEnv, 'BEES_ACTIVITY_REQUIRE_INPUT_DEVICE'), true)) return true;
+
+  const fromPython = pythonDefaultInputDeviceAvailable(python);
+  if (fromPython !== null) return fromPython;
+
+  const fromWindows = windowsDefaultInputDeviceAvailable();
+  if (fromWindows !== null) return fromWindows;
+
+  return null;
 }
 
 function pipReady(python) {
@@ -271,6 +381,7 @@ export function ensureActivityDaemonEnvironment(options = {}) {
     BEES_ACTIVITY_PORT: configuredValue(localEnv, 'BEES_ACTIVITY_PORT') || '4768',
     BEES_ACTIVITY_PYTHON: python,
     BEES_ACTIVITY_DATA_DIR: configuredValue(localEnv, 'BEES_ACTIVITY_DATA_DIR') || defaultDataDir(localEnv),
+    BEES_ACTIVITY_REQUIRE_INPUT_DEVICE: configuredValue(localEnv, 'BEES_ACTIVITY_REQUIRE_INPUT_DEVICE') || 'true',
   };
   const exampleValues = {
     BEES_ACTIVITY_ENABLED: 'true',
@@ -278,7 +389,24 @@ export function ensureActivityDaemonEnvironment(options = {}) {
     BEES_ACTIVITY_PORT: '4768',
     BEES_ACTIVITY_PYTHON: python,
     BEES_ACTIVITY_DATA_DIR: '~/.bees/activity-daemon',
+    BEES_ACTIVITY_REQUIRE_INPUT_DEVICE: 'true',
   };
+
+  if (!envFlagEnabled(values.BEES_ACTIVITY_ENABLED, true)) {
+    ensureEnvFiles(values, { writeLocalEnv, writeExampleEnv, exampleValues });
+    for (const [key, value] of Object.entries(values)) process.env[key] = value;
+    console.log('[activity-daemon-setup] Activity daemon disabled; dependency install skipped.');
+    return { python, installed: existingFile(python) !== null, venvDir: qwenVenvDir(), disabled: true };
+  }
+
+  const hasDefaultInput = defaultInputDeviceAvailable(localEnv, python);
+  if (hasDefaultInput === false) {
+    values.BEES_ACTIVITY_ENABLED = 'false';
+    ensureEnvFiles(values, { writeLocalEnv, writeExampleEnv, exampleValues });
+    for (const [key, value] of Object.entries(values)) process.env[key] = value;
+    console.log('[activity-daemon-setup] No default input device detected; activity daemon disabled and dependency install skipped.');
+    return { python, installed: existingFile(python) !== null, venvDir: qwenVenvDir(), disabled: true, reason: 'no-default-input-device' };
+  }
 
   ensureEnvFiles(values, { writeLocalEnv, writeExampleEnv, exampleValues });
   for (const [key, value] of Object.entries(values)) process.env[key] = value;
