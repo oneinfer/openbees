@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 import { Router } from 'express';
 import { deleteProject, getAllProjects, getAppSetting, saveProject, setAppSetting } from '../db/queries.js';
+import { deleteTaskAttachments } from '../attachments.js';
 import { broadcast } from '../events.js';
 import { parseWorkspacePath } from '../workspace-access.js';
 
@@ -59,7 +60,7 @@ projectsRouter.post('/', (req, res) => {
   res.status(201).json({ project });
 });
 
-projectsRouter.delete('/', (req, res) => {
+projectsRouter.delete('/', async (req, res) => {
   let path: string | null | undefined;
   try {
     path = parseWorkspacePath(req.body);
@@ -71,6 +72,9 @@ projectsRouter.delete('/', (req, res) => {
 
   const result = deleteProject(path);
   if (!result.deleted) return res.status(404).json({ error: 'Project not found' });
+  await Promise.all(result.taskIds.map((taskId) => deleteTaskAttachments(taskId).catch((error) => {
+    console.warn(`Failed to delete attachments for task ${taskId}:`, error);
+  })));
 
   if (getAppSetting(CURRENT_PROJECT_SETTING_KEY) === path) setAppSetting(CURRENT_PROJECT_SETTING_KEY, null);
   broadcast({ type: 'project_deleted', path, taskIds: result.taskIds });

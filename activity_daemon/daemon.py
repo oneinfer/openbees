@@ -42,6 +42,7 @@ class ActivityDaemon:
         self.capture_armed = False
         self.armed_until = 0.0
         self.last_spoken_input = ""
+        self.last_arm_trigger = ""
         self.spoken_input_pending = False
         self.spoken_input_condition = threading.Condition(self.state_lock)
         self.last_disarm_reason: str | None = None
@@ -238,6 +239,7 @@ class ActivityDaemon:
             self.capture_armed = True
             self.armed_until = time.monotonic() + self.config.armed_timeout_seconds
             self.last_spoken_input = spoken_input
+            self.last_arm_trigger = trigger
             self.spoken_input_pending = bool(input_pending)
             self.last_disarm_reason = None
             armed_until = self.armed_until
@@ -295,6 +297,7 @@ class ActivityDaemon:
                 if remaining <= 0:
                     self.capture_armed = False
                     self.armed_until = 0.0
+                    fallback_trigger = "manual_screenshot" if self.last_arm_trigger == "manual_arm" else "voice_screenshot"
                     self.last_disarm_reason = "No drag selection detected; captured screenshot."
                     break
             if self.stop_event.wait(min(remaining, 0.25)):
@@ -304,7 +307,7 @@ class ActivityDaemon:
             return
         print("[activity-daemon] no drag selection detected; capturing screenshot", flush=True)
         self.capture_snapshot(
-            trigger="voice_screenshot",
+            trigger=fallback_trigger,
             include_base64=False,
             include_full_screen=True,
             include_cursor_crop=False,
@@ -330,12 +333,14 @@ class ActivityDaemon:
         print(f"[activity-daemon] accepted voice_selection: {start_pos} -> {end_pos}", flush=True)
         self.wait_for_spoken_input()
         time.sleep(0.35)
+        with self.state_lock:
+            trigger = "manual_selection" if self.last_arm_trigger == "manual_arm" else "voice_selection"
         event = self.capture_snapshot(
-            trigger="voice_selection",
+            trigger=trigger,
             drag_start=start_pos,
             drag_end=end_pos,
             include_cursor_crop=False,
-            include_selection_crop=False,
+            include_selection_crop=True,
         )
         with self.state_lock:
             if self.last_selection_status:
@@ -344,26 +349,9 @@ class ActivityDaemon:
                 self.last_selection_status["selection_text_length"] = len(event.get("text", {}).get("selection_text", ""))
 
     def handle_hover(self, position: tuple[int, int]) -> None:
-        if not self.config.hover_capture_enabled:
-            return
-        with self.state_lock:
-            is_armed = self.capture_armed and time.monotonic() <= self.armed_until
-            if not is_armed:
-                return
-            self.capture_armed = False
-            self.armed_until = 0.0
-        if not self.hover_capture_lock.acquire(blocking=False):
-            return
-        try:
-            print(f"[activity-daemon] hover capture at {position}", flush=True)
-            self.capture_snapshot(
-                trigger="mouse_hover",
-                include_base64=False,
-                include_cursor_crop=False,
-                include_selection_crop=False,
-            )
-        finally:
-            self.hover_capture_lock.release()
+        # A hover must not consume the voice capture arm. If no drag selection
+        # arrives, capture_screenshot_when_arm_expires owns the screenshot fallback.
+        return
 
     def capture_snapshot(
         self,
@@ -439,9 +427,6 @@ class ActivityDaemon:
 
         selection_text = selected_text_snapshot.get("selection_text", "")
         selection_text_source = selected_text_snapshot.get("method")
-        if not selection_text and not (drag_start and drag_end):
-            selection_text = clipboard_snapshot.get("primary_selection_text") or clipboard_snapshot.get("clipboard_text", "")
-            selection_text_source = "primary_selection" if clipboard_snapshot.get("primary_selection_text") else "clipboard"
 
         event = {
             "id": event_id,
@@ -570,6 +555,9 @@ class ActivityRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/capture":
             payload = self._read_json(default={})
+            if "spoken_input" in payload:
+                with self.daemon_ref.state_lock:
+                    self.daemon_ref.last_spoken_input = str(payload.get("spoken_input") or "[input pending]")
             drag_start = _point_tuple(payload.get("drag_start"))
             drag_end = _point_tuple(payload.get("drag_end"))
             include_base64 = bool(payload.get("include_base64", False))

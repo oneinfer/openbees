@@ -1,20 +1,23 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getRecentTaskByDescription, insertTask } from './db/queries.js';
 import { broadcast, clientCount } from './events.js';
 import { openBrowserForDev } from './browser-opener.js';
 import { expandHomePrefix, resolveBeesHome } from './paths.js';
-import { defaultRuntime } from './runtime-config.js';
-import { appendAttachmentContext } from './attachments.js';
-import type { ChatAttachment } from '../shared/types.js';
+import { getActiveActivityAgentSettings } from './activity-agent-settings.js';
+import { createTaskRecord, startTaskImmediately } from './task-service.js';
+import { normalizeActivityIntentDecision } from './prompts/activity-intent.js';
+import { appendAttachmentContext, saveActivityImageAttachments } from './attachments.js';
+import { enrichImageAttachmentContext } from './image-context.js';
+import { getActivityContextBySourceEventId, getAppSetting, insertActivityContext, updateTask } from './db/queries.js';
+import { CURRENT_PROJECT_SETTING_KEY } from './routes/projects.js';
+import { notifyTaskCreated } from './native-notifications.js';
+import type { ActivityContext, ActivityIntentDecision } from '../shared/types.js';
 
 const HEALTH_TIMEOUT_MS = 1200;
 const STARTUP_POLL_MS = 250;
 const STARTUP_TIMEOUT_MS = Number(process.env.BEES_ACTIVITY_STARTUP_TIMEOUT_MS ?? 20 * 60_000);
-const ACTIVITY_TASK_DEDUPE_MS = 15_000;
 const WAKE_BROWSER_OPEN_DEBOUNCE_MS = 5000;
 
 export interface ActivityDaemonStatus {
@@ -38,8 +41,11 @@ interface ActivityDaemonEvent {
   } | null;
   text?: {
     selection_text?: string;
+    selection_text_source?: string | null;
     primary_selection_text?: string;
     clipboard_text?: string;
+    hover_text?: string;
+    focused_text?: string;
   };
   images?: {
     cursor_crop?: ActivityImage | null;
@@ -138,87 +144,76 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const LOW_INFORMATION_TITLES = new Set(['?', 'hi', 'hello', 'hey', 'yo']);
-
-function generateTaskTitle(text: string): string {
-  const firstLine = text.split(/\n/)[0].trim();
-  const normalizedFirstLine = firstLine.toLowerCase().replace(/\s+/g, ' ').replace(/[.!?]+$/g, '').trim();
-  if (!normalizedFirstLine || LOW_INFORMATION_TITLES.has(normalizedFirstLine)) return 'Activity capture';
-
-  const firstSentence = firstLine.split(/[.!?]/)[0].trim();
-  if (!firstSentence) return text.slice(0, 60).trim() || 'Activity capture';
-  if (firstSentence.length <= 60) return firstSentence;
-  return firstSentence.slice(0, 57) + '...';
+function selectedText(event: ActivityDaemonEvent): string {
+  return event.text?.selection_text?.trim() || '';
 }
 
-function selectedText(event: ActivityDaemonEvent): string {
-  return (
-    event.text?.selection_text?.trim()
-    || event.text?.primary_selection_text?.trim()
-    || event.text?.clipboard_text?.trim()
-    || ''
+function hasCapturedContext(event: ActivityDaemonEvent): boolean {
+  return Boolean(
+    selectedText(event)
+    || event.active_window
+    || event.images?.screenshot
+    || event.images?.selection_crop
+    || event.images?.cursor_crop,
   );
+}
+
+function hasCapturedImage(event: ActivityDaemonEvent): boolean {
+  return Boolean(event.images?.screenshot || event.images?.selection_crop || event.images?.cursor_crop);
+}
+
+function transcriptRequestsImageBackedWork(transcript: string): boolean {
+  const normalized = transcript.trim().toLowerCase();
+  if (!normalized) return false;
+
+  const hasAction = /\b(create|build|make|design|clone|copy|recreate|replicate|implement|generate|modify|update|turn|convert)\b/.test(normalized);
+  const hasDeliverable = /\b(website|site|webpage|page|app|ui|screen|layout|component|design|interface|landing|dashboard|form|flow)\b/.test(normalized);
+  const referencesCapture = /\b(like this|based on this|from this|using this|this screenshot|this image|the screenshot|the image|what'?s shown|visible)\b/.test(normalized);
+
+  return hasAction && (hasDeliverable || referencesCapture);
+}
+
+function imageBackedTaskDecision(
+  event: ActivityDaemonEvent,
+  decision: ActivityIntentDecision,
+  transcript: string,
+): ActivityIntentDecision {
+  if (decision.action === 'create_task' && decision.hasEnoughContext) return decision;
+  if (!hasCapturedImage(event) || !transcriptRequestsImageBackedWork(transcript)) return decision;
+
+  return {
+    action: 'create_task',
+    title: transcript.trim().slice(0, 80) || 'Voice task from screenshot',
+    taskDescription: transcript.trim(),
+    hasEnoughContext: true,
+    reason: 'The spoken request is actionable and the captured screenshot provides the visual reference for the task agent.',
+  };
+}
+
+function activityImageValues(event: ActivityDaemonEvent): unknown[] {
+  return [
+    event.images?.selection_crop,
+    event.images?.screenshot,
+    event.images?.cursor_crop,
+  ].filter(Boolean);
+}
+
+function buildActivityTaskDescription(
+  event: ActivityDaemonEvent,
+  decision: ActivityIntentDecision,
+  transcript: string,
+): string {
+  const userRequest = transcript.trim() || selectedText(event) || decision.title;
+  return userRequest || 'Captured screenshot.';
 }
 
 function isTaskCreatingActivityEvent(event: ActivityDaemonEvent): boolean {
   return event.trigger === 'voice_selection' || event.trigger === 'voice_screenshot';
 }
 
-function screenshotImage(event: ActivityDaemonEvent): ActivityImage | null {
-  return event.images?.screenshot ?? event.images?.cursor_crop ?? null;
-}
-
-function activityDescription(event: ActivityDaemonEvent, text: string): string {
-  if (text) return text;
-
-  const spokenInput = event.spoken_input?.trim();
-  const hasSpokenInput = spokenInput && spokenInput !== '[input pending]';
-  const windowTitle = event.active_window?.title?.trim();
-  const appName = event.active_window?.app_name?.trim() || event.active_window?.process_name?.trim();
-  const context = [
-    windowTitle ? `Window: ${windowTitle}` : '',
-    appName ? `App: ${appName}` : '',
-  ].filter(Boolean);
-
-  return [
-    hasSpokenInput ? spokenInput : 'Captured screenshot after "hey bee" because no text selection was made.',
-    ...context,
-  ].join('\n');
-}
-
-function attachmentFromActivityImage(event: ActivityDaemonEvent): ChatAttachment | null {
-  const image = screenshotImage(event);
-  if (!image?.path) return null;
-
-  try {
-    const stats = statSync(image.path);
-    if (!stats.isFile()) return null;
-
-    return {
-      id: event.id || randomUUID(),
-      name: basename(image.path) || 'activity-screenshot.png',
-      path: image.path,
-      mimeType: imageMimeType(image.path),
-      size: stats.size,
-      kind: 'image',
-    };
-  } catch {
-    return null;
-  }
-}
-
-function imageMimeType(path: string): string {
-  switch (extname(path).toLowerCase()) {
-    case '.jpg':
-    case '.jpeg':
-      return 'image/jpeg';
-    case '.webp':
-      return 'image/webp';
-    case '.gif':
-      return 'image/gif';
-    default:
-      return 'image/png';
-  }
+function normalizedTranscript(event: ActivityDaemonEvent): string {
+  const transcript = event.spoken_input?.trim() ?? '';
+  return transcript === '[input pending]' ? '' : transcript;
 }
 
 function isFreshEvent(event: ActivityDaemonEvent, connectedAt: number): boolean {
@@ -322,7 +317,6 @@ class ActivityDaemonService {
   private eventStreamAbort: AbortController | null = null;
   private eventStreamReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private processedEventIds = new Set<string>();
-  private recentEventFingerprints = new Map<string, number>();
   private wakeUiUrl: string | null = null;
   private lastWakeBrowserOpenAt = 0;
 
@@ -584,17 +578,28 @@ class ActivityDaemonService {
     if (dataLines.length === 0) return;
 
     try {
-      this.handleActivityEvent(JSON.parse(dataLines.join('\n')) as ActivityDaemonEvent, connectedAt);
+      void this.handleActivityEvent(JSON.parse(dataLines.join('\n')) as ActivityDaemonEvent, connectedAt)
+        .catch((error) => {
+          console.warn(`[activity-daemon] failed to process activity event: ${formatError(error)}`);
+        });
     } catch (error) {
       console.warn(`[activity-daemon] ignored malformed activity event: ${formatError(error)}`);
     }
   }
 
-  private handleActivityEvent(event: ActivityDaemonEvent, connectedAt: number): void {
+  private async handleActivityEvent(event: ActivityDaemonEvent, connectedAt: number): Promise<void> {
     if (!isFreshEvent(event, connectedAt)) return;
-    if (event.trigger === 'voice_wake') this.openUiForWake();
-    // The browser owns activity handoff for selection/screenshot events: it
-    // receives the same SSE event, opens /tasks/new, and fills the composer.
+    if (event.trigger === 'voice_wake') {
+      this.openUiForWake();
+      return;
+    }
+    if (!isTaskCreatingActivityEvent(event)) return;
+
+    const eventId = event.id || `${event.timestamp ?? ''}:${event.trigger ?? ''}`;
+    if (!eventId || this.processedEventIds.has(eventId)) return;
+    this.rememberEvent(eventId);
+
+    await this.processVoiceActivityEvent(event);
   }
 
   private openUiForWake(): void {
@@ -616,22 +621,125 @@ class ActivityDaemonService {
     if (oldest) this.processedEventIds.delete(oldest);
   }
 
-  private eventFingerprint(event: ActivityDaemonEvent, text: string): string {
-    const normalizedText = text.replace(/\s+/g, ' ').trim().toLowerCase();
-    const windowTitle = event.active_window?.title?.trim().toLowerCase() ?? '';
-    return `${event.trigger ?? ''}:${windowTitle}:${normalizedText}`;
-  }
+  private async processVoiceActivityEvent(event: ActivityDaemonEvent): Promise<void> {
+    const transcript = normalizedTranscript(event);
+    const capturedText = selectedText(event);
+    let decision: ActivityIntentDecision;
 
-  private seenRecentFingerprint(fingerprint: string): boolean {
-    const now = Date.now();
-    for (const [key, timestamp] of this.recentEventFingerprints) {
-      if (now - timestamp > ACTIVITY_TASK_DEDUPE_MS) this.recentEventFingerprints.delete(key);
+    if (!transcript && !hasCapturedContext(event)) {
+      decision = {
+        action: 'save_context',
+        title: 'Saved voice context',
+        taskDescription: '',
+        hasEnoughContext: false,
+        reason: 'Spoken input and captured context are empty or still pending.',
+      };
+      await this.broadcastActivityDraft(event, decision, capturedText);
+      return;
     }
-    return this.recentEventFingerprints.has(fingerprint);
+
+    try {
+      const activeSettings = getActiveActivityAgentSettings();
+      decision = await this.judgeActivityIntent(transcript, event, activeSettings);
+      decision = imageBackedTaskDecision(event, decision, transcript);
+    } catch (error) {
+      decision = {
+        action: 'save_context',
+        title: 'Saved voice context',
+        taskDescription: transcript,
+        hasEnoughContext: false,
+        reason: `Activity intent classification failed: ${formatError(error)}`,
+      };
+      await this.broadcastActivityDraft(event, decision, capturedText);
+      return;
+    }
+
+    if (decision.action === 'create_task' && decision.hasEnoughContext) {
+      await this.createTaskFromActivityDecision(event, decision, transcript);
+      return;
+    }
+
+    await this.broadcastActivityDraft(event, decision, capturedText);
   }
 
-  private rememberFingerprint(fingerprint: string): void {
-    this.recentEventFingerprints.set(fingerprint, Date.now());
+  private async judgeActivityIntent(
+    transcript: string,
+    event: ActivityDaemonEvent,
+    activeSettings: ReturnType<typeof getActiveActivityAgentSettings>,
+  ): Promise<ActivityIntentDecision> {
+    const { agents } = await import('./app.js');
+    const decision = await agents.adapterFor(activeSettings.runtime).judgeActivityIntent(transcript, {
+      timestamp: event.timestamp ?? null,
+      source: event.trigger ?? null,
+      capturedText: selectedText(event) || null,
+      activeWindow: event.active_window ?? null,
+      images: event.images ?? null,
+      model: activeSettings.model,
+      reasoningEffort: activeSettings.reasoningEffort,
+    });
+    return normalizeActivityIntentDecision(decision, transcript || selectedText(event));
+  }
+
+  private async createTaskFromActivityDecision(
+    event: ActivityDaemonEvent,
+    decision: ActivityIntentDecision,
+    transcript: string,
+  ): Promise<void> {
+    try {
+      const description = buildActivityTaskDescription(event, decision, transcript);
+      const activeSettings = getActiveActivityAgentSettings();
+      const workspacePath = getAppSetting(CURRENT_PROJECT_SETTING_KEY);
+      let task = createTaskRecord({
+        title: transcript.trim() || decision.title,
+        description,
+        status: 'pending',
+        taskKind: 'task',
+        taskMode: 'direct',
+        workspacePath,
+        runtime: activeSettings.runtime,
+        model: activeSettings.model,
+        reasoningEffort: activeSettings.reasoningEffort,
+      });
+      const attachments = await enrichImageAttachmentContext(
+        await saveActivityImageAttachments(task.id, activityImageValues(event)),
+      );
+      if (attachments.length > 0) {
+        task = updateTask(task.id, {
+          description: appendAttachmentContext(description, attachments),
+        }) ?? task;
+      }
+      task = startTaskImmediately(task);
+      notifyTaskCreated(task);
+      broadcast({ type: 'task_created', task });
+    } catch (error) {
+      await this.broadcastActivityDraft(event, {
+        ...decision,
+        action: 'save_context',
+        hasEnoughContext: false,
+        reason: `Task creation failed: ${formatError(error)}`,
+      }, selectedText(event));
+    }
+  }
+
+  private async broadcastActivityDraft(
+    event: ActivityDaemonEvent,
+    decision: ActivityIntentDecision,
+    capturedText: string,
+  ): Promise<ActivityContext> {
+    const existing = event.id ? getActivityContextBySourceEventId(event.id) : undefined;
+    const context = existing ?? insertActivityContext({
+      source_event_id: event.id ?? null,
+      trigger: event.trigger ?? 'activity',
+      spoken_input: normalizedTranscript(event) || event.spoken_input || null,
+      captured_text: capturedText || null,
+      active_window: event.active_window ?? null,
+      images: event.images ?? null,
+      decision,
+      promoted_task_id: null,
+    });
+    broadcast({ type: 'activity_context_created', context });
+    broadcast({ type: 'activity_draft_created', context });
+    return context;
   }
 
   private async fetchHealth(): Promise<{ ok: true; data: unknown } | { ok: false; error?: string }> {

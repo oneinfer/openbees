@@ -97,7 +97,10 @@ export function voiceRecordingSupported(): boolean {
     && !!audioContextConstructor();
 }
 
-export function useVoiceRecorder(onTranscript: (text: string) => void) {
+export function useVoiceRecorder(
+  onTranscript: (text: string) => void,
+  onAudio?: (audio: Blob) => Promise<void>,
+) {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -152,17 +155,20 @@ export function useVoiceRecorder(onTranscript: (text: string) => void) {
     }
 
     setIsTranscribing(true);
-    transcribeAudio(audio)
-      .then((result) => {
+    const run = onAudio
+      ? onAudio(audio)
+      : transcribeAudio(audio).then((result) => {
         const text = result.text.trim();
         if (text) onTranscript(text);
         else setError('No speech was detected.');
-      })
+      });
+
+    run
       .catch((err) => {
         setError(toErrorMessage(err, 'Failed to transcribe audio'));
       })
       .finally(() => setIsTranscribing(false));
-  }, [cleanup, onTranscript, releaseActivitySuppression]);
+  }, [cleanup, onAudio, onTranscript, releaseActivitySuppression]);
 
   const start = useCallback(async () => {
     if (!voiceRecordingSupported()) {

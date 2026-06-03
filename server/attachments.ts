@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
-import { copyFile, rename, unlink } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { copyFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { basename, extname, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import multer from 'multer';
@@ -45,6 +45,13 @@ export async function cleanupUploadedAttachments(files: Express.Multer.File[]): 
   await Promise.all(files.map((file) => unlink(file.path).catch(() => undefined)));
 }
 
+export async function deleteTaskAttachments(taskId: string): Promise<void> {
+  const attachmentsRoot = resolve(resolveBeesWorkspaceDir(), 'attachments');
+  const attachmentDir = resolve(attachmentsRoot, taskId);
+  if (!attachmentDir.startsWith(`${attachmentsRoot}${sep}`)) return;
+  await rm(attachmentDir, { recursive: true, force: true });
+}
+
 export async function saveTaskAttachments(
   taskId: string,
   files: Express.Multer.File[],
@@ -81,6 +88,53 @@ export async function saveTaskAttachments(
   return attachments;
 }
 
+export async function saveActivityImageAttachments(
+  taskId: string,
+  images: Iterable<unknown>,
+): Promise<ChatAttachment[]> {
+  const imageInputs = Array.from(images)
+    .map(activityImageInput)
+    .filter((image): image is ActivityImageInput => Boolean(image));
+  if (imageInputs.length === 0) return [];
+
+  const attachmentDir = join(resolveBeesWorkspaceDir(), 'attachments', taskId);
+  mkdirSync(attachmentDir, { recursive: true });
+
+  const attachments: ChatAttachment[] = [];
+  const seen = new Set<string>();
+
+  for (const image of imageInputs) {
+    const dedupeKey = image.path || image.base64;
+    if (dedupeKey && seen.has(dedupeKey)) continue;
+    if (dedupeKey) seen.add(dedupeKey);
+
+    const id = randomUUID();
+    const sourceName = image.path ? basename(image.path) : 'activity-screenshot.png';
+    const safeName = ensureImageExtension(safeFileName(sourceName), image.mimeType);
+    const targetPath = join(attachmentDir, `${Date.now()}-${id}-${safeName}`);
+
+    if (image.base64) {
+      await writeFile(targetPath, Buffer.from(normalizeBase64(image.base64), 'base64'));
+    } else if (image.path) {
+      await copyFile(image.path, targetPath);
+    } else {
+      continue;
+    }
+
+    const targetStats = await stat(targetPath).catch(() => null);
+    attachments.push({
+      id,
+      name: safeName,
+      path: targetPath,
+      mimeType: image.mimeType || mimeTypeForImagePath(safeName),
+      size: targetStats?.size ?? 0,
+      kind: 'image',
+    });
+  }
+
+  return attachments;
+}
+
 export function appendAttachmentContext(message: string, attachments: ChatAttachment[]): string {
   if (attachments.length === 0) return message;
 
@@ -109,6 +163,63 @@ ${lines.join('\n')}
 function safeFileName(value: string): string {
   const name = basename(value).trim().replace(/[<>:"/\\|?*\u0000-\u001F]+/g, '_');
   return name || 'attachment';
+}
+
+interface ActivityImageInput {
+  path?: string;
+  base64?: string;
+  mimeType: string;
+}
+
+function activityImageInput(value: unknown): ActivityImageInput | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const path = typeof record.path === 'string' && record.path.trim() ? record.path.trim() : undefined;
+  const rawBase64 = typeof record.base64 === 'string' && record.base64.trim() ? record.base64.trim() : undefined;
+  const dataUrlMatch = rawBase64?.match(/^data:([^;,]+);base64,(.+)$/);
+  const base64 = dataUrlMatch ? dataUrlMatch[2] : rawBase64;
+  const mimeType = dataUrlMatch?.[1]
+    || (typeof record.mimeType === 'string' && record.mimeType.trim())
+    || (typeof record.mime_type === 'string' && record.mime_type.trim())
+    || (path ? mimeTypeForImagePath(path) : 'image/png');
+
+  if (!path && !base64) return null;
+  return { path, base64, mimeType };
+}
+
+function normalizeBase64(value: string): string {
+  const match = value.match(/^data:[^;,]+;base64,(.+)$/);
+  return match ? match[1] : value;
+}
+
+function ensureImageExtension(name: string, mimeType: string): string {
+  if (extname(name)) return name;
+  return `${name}.${extensionForMimeType(mimeType)}`;
+}
+
+function extensionForMimeType(mimeType: string): string {
+  switch (mimeType.toLowerCase()) {
+    case 'image/jpeg':
+    case 'image/jpg':
+      return 'jpg';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    case 'image/bmp':
+      return 'bmp';
+    default:
+      return 'png';
+  }
+}
+
+function mimeTypeForImagePath(imagePath: string): string {
+  const lower = imagePath.toLowerCase();
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.bmp')) return 'image/bmp';
+  return 'image/png';
 }
 
 function escapeXml(value: string): string {

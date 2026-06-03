@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { fetchAgentDefaults, fetchAgentModels, fetchAgentRuntimes, fetchTaskAgentSettings } from '../lib/api';
+import { fetchAgentDefaults, fetchAgentModels, fetchAgentRuntimes, fetchTaskAgentSettings, updateActivityAgentSettings } from '../lib/api';
 import type { AgentRunSettings } from '../lib/api';
 import { readCachedAgentDefaults, writeCachedAgentDefaults } from '../lib/agentDefaultsCache';
 import type { AgentDefaults, AgentModelGroup, AgentRuntime, AgentRuntimeOption, ReasoningEffort } from '@shared/types';
@@ -54,6 +54,17 @@ export function useAgentConfig(taskId?: string, initialSettings?: AgentRunSettin
   }, [taskId]);
 
   const effectiveRuntime = runtime ?? defaults?.runtime ?? 'hermes';
+
+  useEffect(() => {
+    if (isLoading) return;
+    void updateActivityAgentSettings({
+      runtime: effectiveRuntime,
+      model,
+      reasoningEffort,
+    }).catch(() => {
+      // Activity capture is best-effort; normal task/chat runtime selection still works.
+    });
+  }, [effectiveRuntime, isLoading, model, reasoningEffort]);
 
   useEffect(() => {
     let cancelled = false;

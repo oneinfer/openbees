@@ -44,3 +44,21 @@ CREATE TABLE IF NOT EXISTS task_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_messages_task_id_created_at ON task_messages(task_id, created_at);
+
+CREATE TABLE IF NOT EXISTS activity_contexts (
+  id                 TEXT PRIMARY KEY,
+  source_event_id    TEXT,
+  trigger            TEXT NOT NULL,
+  spoken_input       TEXT,
+  captured_text      TEXT,
+  active_window_json TEXT,
+  images_json        TEXT,
+  decision_json      TEXT,
+  promoted_task_id   TEXT,
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL,
+  FOREIGN KEY (promoted_task_id) REFERENCES tasks(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_contexts_created_at ON activity_contexts(created_at);
+CREATE INDEX IF NOT EXISTS idx_activity_contexts_source_event_id ON activity_contexts(source_event_id);

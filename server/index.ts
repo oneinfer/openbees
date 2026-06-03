@@ -27,7 +27,7 @@ async function main() {
   const url = `http://localhost:${PORT}`;
   const currentProjectPath = getAppSetting(CURRENT_PROJECT_SETTING_KEY);
   const startupUrl = currentProjectPath
-    ? `${url}/projects?path=${encodeURIComponent(currentProjectPath)}`
+    ? `${url}/tasks/new?workspacePath=${encodeURIComponent(currentProjectPath)}`
     : url;
   console.log(`Hermes Agent Mission Control running on ${url}`);
   openBrowserForDev(startupUrl);

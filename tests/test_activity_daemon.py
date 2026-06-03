@@ -11,7 +11,7 @@ from activity_daemon.clipboard import ClipboardCollector
 from activity_daemon.config import ActivityConfig
 from activity_daemon.daemon import ActivityDaemon
 from activity_daemon.input_events import InputEventCollector
-from activity_daemon.speech import OpenWakeWordDetector, SpeechArmController, contains_wake_word, normalize_spoken_text
+from activity_daemon.speech import OpenWakeWordDetector, SpeechArmController, command_after_wake_phrase, contains_wake_word, normalize_spoken_text
 from activity_daemon.store import ActivityStore
 
 
@@ -44,8 +44,15 @@ class ActivityDaemonTests(unittest.TestCase):
         self.assertTrue(contains_wake_word("hey peace can you help"))
         self.assertTrue(contains_wake_word("hay bee"))
         self.assertTrue(contains_wake_word("a b"))
+        self.assertTrue(contains_wake_word("have we can create a website like this"))
+        self.assertTrue(contains_wake_word("heavy kind of creative website like this"))
+        self.assertTrue(contains_wake_word("happy can a creative website"))
+        self.assertTrue(contains_wake_word("so we can create a website like this"))
         self.assertFalse(contains_wake_word("a b", match_mode="strict"))
         self.assertFalse(contains_wake_word("abc"))
+        self.assertEqual(command_after_wake_phrase("have we can create a website like this"), "can create a website like this")
+        self.assertEqual(command_after_wake_phrase("happy can a creative website"), "can a creative website")
+        self.assertEqual(command_after_wake_phrase("so we can create a website like this"), "can create a website like this")
 
     def test_openwakeword_detector_scores_padded_audio_chunks(self) -> None:
         class FakeModel:
@@ -283,6 +290,65 @@ class ActivityDaemonTests(unittest.TestCase):
             self.assertEqual(event["text"]["selection_text_source"], "keyboard_copy")
             self.assertFalse(event["text"]["selection_clipboard_restored"])
             self.assertTrue(event["privacy"]["captured"]["selection_text"])
+
+    def test_snapshot_without_drag_does_not_promote_old_clipboard_to_selection(self) -> None:
+        class FakeClipboard:
+            def refresh(self) -> None:
+                return None
+
+            def snapshot(self):
+                return {"clipboard_text": "old clipboard", "primary_selection_text": "old primary"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ActivityConfig(data_dir=temp_dir)
+            config.collectors.screenshot = False
+            config.collectors.active_window = False
+            config.collectors.accessibility = False
+            config.collectors.speech = False
+            config.collectors.mouse = False
+            daemon = ActivityDaemon(config)
+            daemon.clipboard = FakeClipboard()
+
+            event = daemon.capture_snapshot(trigger="voice_screenshot")
+
+            self.assertEqual(event["text"]["clipboard_text"], "old clipboard")
+            self.assertEqual(event["text"]["primary_selection_text"], "old primary")
+            self.assertEqual(event["text"]["selection_text"], "")
+            self.assertIsNone(event["text"]["selection_text_source"])
+
+    def test_drag_snapshot_does_not_fall_back_to_old_clipboard_when_copy_fails(self) -> None:
+        class FakeClipboard:
+            def capture_selected_text_via_copy(self, timeout_seconds: float, preserve_clipboard: bool):
+                return {
+                    "selection_text": "",
+                    "method": "keyboard_copy",
+                    "clipboard_restored": True,
+                    "last_error": None,
+                }
+
+            def refresh(self) -> None:
+                return None
+
+            def snapshot(self):
+                return {"clipboard_text": "old clipboard", "primary_selection_text": "old primary"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ActivityConfig(data_dir=temp_dir)
+            config.collectors.screenshot = False
+            config.collectors.active_window = False
+            config.collectors.accessibility = False
+            config.collectors.speech = False
+            config.collectors.mouse = False
+            daemon = ActivityDaemon(config)
+            daemon.clipboard = FakeClipboard()
+
+            event = daemon.capture_snapshot(trigger="voice_selection", drag_start=(10, 10), drag_end=(100, 20))
+
+            self.assertEqual(event["text"]["clipboard_text"], "old clipboard")
+            self.assertEqual(event["text"]["primary_selection_text"], "old primary")
+            self.assertEqual(event["text"]["selection_text"], "")
+            self.assertEqual(event["text"]["selection_text_source"], "keyboard_copy")
+            self.assertFalse(event["privacy"]["captured"]["selection_text"])
 
     def test_unarmed_drag_selection_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

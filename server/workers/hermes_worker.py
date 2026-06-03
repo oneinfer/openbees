@@ -1540,12 +1540,128 @@ def _judge_completion(request: dict[str, Any]) -> dict[str, Any]:
     return {"done": False, "reason": "unparseable response"}
 
 
+def _normalize_activity_intent_decision(parsed: dict[str, Any], transcript: str, fallback_text: str | None = None) -> dict[str, Any]:
+    fallback = (fallback_text or transcript).strip()
+    has_enough_context = bool(parsed.get("hasEnoughContext", False))
+    requested_action = str(parsed.get("action") or "save_context")
+    action = "create_task" if requested_action == "create_task" and has_enough_context else "save_context"
+    title = str(parsed.get("title") or "").strip()
+    task_description = str(parsed.get("taskDescription") or "").strip()
+    reason = str(parsed.get("reason") or "").strip()
+
+    if not title:
+        title = fallback[:80] if action == "create_task" else "Saved voice context"
+    if not task_description:
+        task_description = fallback
+    if not reason:
+        reason = (
+            "Transcript contains an actionable task."
+            if action == "create_task"
+            else "Transcript does not contain enough task context."
+        )
+
+    return {
+        "action": action,
+        "title": title[:80],
+        "taskDescription": task_description,
+        "hasEnoughContext": action == "create_task",
+        "reason": reason,
+    }
+
+
+def _judge_activity_intent(request: dict[str, Any]) -> dict[str, Any]:
+    """Classify wake-word activity from spoken input and captured context."""
+    transcript = _string_or_none(request.get("transcript")) or ""
+    transcript = transcript.strip()
+    captured_text = _string_or_none(request.get("capturedText")) or ""
+    captured_text = captured_text.strip()
+    if (not transcript or transcript == "[input pending]") and not captured_text:
+        return {
+            "action": "save_context",
+            "title": "Saved voice context",
+            "taskDescription": "",
+            "hasEnoughContext": False,
+            "reason": "Spoken input and captured context are empty or still pending.",
+        }
+
+    system_message = _string_or_none(request.get("systemMessage")) or (
+        "You are a wake-word activity intent classifier. Respond ONLY with JSON. "
+        "Decide from the spoken input and captured selected text/window/image metadata. "
+        "Do not invent visual details from screenshots you cannot inspect."
+    )
+    prompt = _string_or_none(request.get("prompt"))
+    if not prompt:
+        timestamp = _string_or_none(request.get("timestamp"))
+        source = _string_or_none(request.get("source"))
+        active_window = request.get("activeWindow")
+        images = request.get("images")
+        metadata = []
+        if timestamp:
+            metadata.append(f"timestamp: {timestamp}")
+        if source:
+            metadata.append(f"source: {source}")
+        metadata_text = "\n".join(metadata)
+        context = []
+        if captured_text:
+            context.append(f"Captured selected text:\n{captured_text}")
+        if isinstance(active_window, dict):
+            context.append("Active window:\n" + json.dumps(active_window, ensure_ascii=False, indent=2))
+        if isinstance(images, dict):
+            context.append("Captured image metadata:\n" + json.dumps(images, ensure_ascii=False, indent=2))
+        context_text = "\n\n".join(context)
+        prompt = (
+            (f"Metadata:\n{metadata_text}\n\n" if metadata_text else "")
+            + f"Transcript:\n{transcript or '[none]'}\n\n"
+            + (f"Captured context:\n{context_text}\n\n" if context_text else "")
+            + "Classify whether this wake-word event is enough to create and start an autonomous task. "
+            + 'Return {"action":"create_task"|"save_context","title":"short title",'
+            + '"taskDescription":"task prompt based on spoken input and captured context","hasEnoughContext":true|false,'
+            + '"reason":"one sentence"}'
+        )
+
+    session_id = f"bees-activity-intent-{uuid.uuid4().hex[:8]}"
+    requested_model = _string_or_none(request.get("model"))
+    requested_reasoning = _normalize_reasoning_effort(_string_or_none(request.get("reasoningEffort"))) or "none"
+    agent = _create_agent(
+        session_id=session_id,
+        requested_model=requested_model,
+        reasoning_effort=requested_reasoning,
+    )
+
+    result = agent.run_conversation(
+        user_message=prompt,
+        system_message=system_message,
+        conversation_history=[],
+    )
+
+    text = str(result.get("final_response") or "")
+    json_match = re.search(r"\{[^{}]*\}", text)
+    if json_match:
+        try:
+            parsed = json.loads(json_match.group())
+            if isinstance(parsed, dict):
+                return _normalize_activity_intent_decision(parsed, transcript, captured_text)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return {
+        "action": "save_context",
+        "title": "Saved voice context",
+        "taskDescription": transcript or captured_text,
+        "hasEnoughContext": False,
+        "reason": "Activity intent classifier returned an unparseable response.",
+    }
+
+
 def _run_judge_thread(request_id: str, request: dict[str, Any]) -> None:
     acquired = False
     try:
         AGENT_SEMAPHORE.acquire()
         acquired = True
-        result_data = _judge_completion(request)
+        if request.get("type") == "judge.activity_intent":
+            result_data = _judge_activity_intent(request)
+        else:
+            result_data = _judge_completion(request)
         _result(request_id, result_data)
     except Exception as exc:
         _send_error(request_id, exc)
@@ -1636,7 +1752,7 @@ def _handle_request(request: dict[str, Any]) -> None:
             _result(request_id, _project_session_metadata(request.get("sessionId")))
         elif request_type == "chat":
             _submit_chat_request(request_id, request)
-        elif request_type == "judge.completion":
+        elif request_type == "judge.completion" or request_type == "judge.activity_intent":
             _submit_judge_request(request_id, request)
         else:
             raise WorkerError(f"Unknown request type: {request_type}", code="bad_request")

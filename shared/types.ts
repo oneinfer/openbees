@@ -78,6 +78,10 @@ export type BoardEvent =
   | { type: 'task_created'; task: Task }
   | { type: 'task_updated'; task: Task }
   | { type: 'task_deleted'; taskId: string }
+  | { type: 'activity_draft_created'; context: ActivityContext }
+  | { type: 'activity_context_created'; context: ActivityContext }
+  | { type: 'activity_context_updated'; context: ActivityContext }
+  | { type: 'activity_context_deleted'; contextId: string }
   | { type: 'project_saved'; project: Project }
   | { type: 'project_deleted'; path: string; taskIds: string[] }
   | { type: 'task_runs_snapshot'; runs: TaskRunState[] }
@@ -110,6 +114,28 @@ export interface ChatAttachment {
   size: number;
   kind: 'image' | 'file';
   visualSummary?: string;
+}
+
+export interface ActivityIntentDecision {
+  action: 'create_task' | 'save_context';
+  title: string;
+  taskDescription: string;
+  hasEnoughContext: boolean;
+  reason: string;
+}
+
+export interface ActivityContext {
+  id: string;
+  source_event_id: string | null;
+  trigger: string;
+  spoken_input: string | null;
+  captured_text: string | null;
+  active_window: Record<string, unknown> | null;
+  images: Record<string, unknown> | null;
+  decision: ActivityIntentDecision | null;
+  promoted_task_id: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface SessionMetadata {
@@ -194,6 +220,14 @@ export interface AsrTranscriptionResponse {
   text: string;
   language: string | null;
   durationMs: number;
+}
+
+export interface AsrTaskIntentResponse {
+  transcript: AsrTranscriptionResponse;
+  decision: ActivityIntentDecision;
+  actionTaken: 'task_created_started' | 'insert_for_edit';
+  task?: Task;
+  error?: string;
 }
 
 export interface TaskAgentSettings {

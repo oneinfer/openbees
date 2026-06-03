@@ -25,11 +25,17 @@ export function useTasks() {
   }, [setProjects]);
 
   useEffect(() => {
+    const projectPathAtRequestStart = useStore.getState().currentProjectPath;
     fetchCurrentProject()
-      .then((res) => setCurrentProjectPath(res.workspacePath))
+      .then((res) => {
+        const state = useStore.getState();
+        if (state.currentProjectLoaded && state.currentProjectPath !== projectPathAtRequestStart) return;
+        setCurrentProjectPath(res.workspacePath);
+      })
       .catch((error) => {
         console.error(error);
-        setCurrentProjectPath(useStore.getState().currentProjectPath);
+        const state = useStore.getState();
+        if (!state.currentProjectLoaded) setCurrentProjectPath(state.currentProjectPath);
       });
   }, [setCurrentProjectPath]);
 

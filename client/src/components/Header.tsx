@@ -21,6 +21,7 @@ export function Header() {
   const isSkills = location.pathname === '/skills';
   const isFiles = location.pathname === '/files';
   const isProjects = location.pathname === '/projects';
+  const isActivity = location.pathname === '/activity';
 
   let title = 'Tasks';
   let breadcrumb: { label: string; to?: string }[] = [];
@@ -41,6 +42,8 @@ export function Header() {
   } else if (isProjects) {
     title = projectPath ? selectedProjectLabel : 'Projects';
     if (projectPath) breadcrumb = [{ label: 'Projects', to: '/projects' }];
+  } else if (isActivity) {
+    title = 'Activity Inbox';
   } else if (isNewTask) {
     title = 'New Task';
     breadcrumb = [{ label: 'Tasks', to: '/' }];

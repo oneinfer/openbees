@@ -46,6 +46,33 @@ RELAXED_WAKE_VARIANTS = {
     "h v.",
 }
 STRICT_FALSE_POSITIVES = {"a b", "ab", "abc", "abyss"}
+ASR_CONFUSED_WAKE_PREFIXES = (
+    "have we",
+    "heavy",
+    "happy",
+    "hey we",
+    "hay we",
+)
+RISKY_ASR_CONFUSED_WAKE_PREFIXES = (
+    "so we",
+)
+COMMAND_STARTERS_AFTER_WAKE = {
+    "can",
+    "could",
+    "create",
+    "make",
+    "build",
+    "open",
+    "show",
+    "find",
+    "search",
+    "write",
+    "draft",
+    "summarize",
+    "explain",
+    "tell",
+    "help",
+}
 
 
 def normalize_spoken_text(text: str) -> str:
@@ -77,6 +104,11 @@ def wake_word_match_reason(text: str, wake_phrase: str | None = None, match_mode
     if normalized in STRICT_FALSE_POSITIVES or compact in STRICT_FALSE_POSITIVES:
         return None
 
+    if relaxed:
+        confused_wake = confused_wake_prefix(normalized)
+        if confused_wake is not None:
+            return f"asr-confused wake: {confused_wake}"
+
     for normalized_wake in configured_wakes + [normalize_spoken_text(wake_word) for wake_word in WAKE_WORDS]:
         if normalized == normalized_wake or normalized_wake in normalized:
             return f"phrase: {normalized_wake}"
@@ -97,8 +129,66 @@ def wake_word_match_reason(text: str, wake_phrase: str | None = None, match_mode
     return None
 
 
+def confused_wake_prefix(normalized: str) -> str | None:
+    for wake_prefix in ASR_CONFUSED_WAKE_PREFIXES:
+        if normalized == wake_prefix or normalized.startswith(f"{wake_prefix} "):
+            return wake_prefix
+
+    for wake_prefix in RISKY_ASR_CONFUSED_WAKE_PREFIXES:
+        if normalized == wake_prefix:
+            return wake_prefix
+        if normalized.startswith(f"{wake_prefix} "):
+            remainder = normalized[len(wake_prefix):].strip()
+            first_word = remainder.split(maxsplit=1)[0] if remainder else ""
+            if first_word in COMMAND_STARTERS_AFTER_WAKE:
+                return wake_prefix
+
+    return None
+
+
 def contains_wake_word(text: str, wake_phrase: str | None = None, match_mode: str = "relaxed") -> bool:
     return wake_word_match_reason(text, wake_phrase, match_mode) is not None
+
+
+def command_after_wake_phrase(text: str, wake_phrase: str | None = None) -> str | None:
+    normalized = normalize_spoken_text(text)
+    if not normalized:
+        return None
+
+    wake_variants = []
+    if wake_phrase:
+        configured = normalize_spoken_text(wake_phrase)
+        if configured:
+            wake_variants.append(configured)
+    wake_variants.extend(normalize_spoken_text(wake_word) for wake_word in WAKE_WORDS)
+
+    for wake_word in sorted(set(wake_variants), key=len, reverse=True):
+        if not wake_word:
+            continue
+        if normalized == wake_word:
+            return ""
+        if normalized.startswith(f"{wake_word} "):
+            return normalized[len(wake_word):].strip()
+
+        marker = f" {wake_word} "
+        index = normalized.find(marker)
+        if index >= 0:
+            return normalized[index + len(marker):].strip()
+
+    words = normalized.split()
+    if words and words[0] in {"hey", "hay", "hi"}:
+        bee_like_words = {"b", "be", "bee", "bees", "beez", "peace", "piece", "please", "base", "beast"}
+        for index, word in enumerate(words[1:4], start=1):
+            if word in bee_like_words:
+                return " ".join(words[index + 1:]).strip()
+
+    confused_wake = confused_wake_prefix(normalized)
+    if confused_wake is not None:
+        if normalized == confused_wake:
+            return ""
+        return normalized[len(confused_wake):].strip()
+
+    return None
 
 
 class OpenWakeWordDetector:
@@ -623,6 +713,7 @@ class SpeechArmController:
                         continue
 
                     self._debug_voice_activity("wake audio accepted by required Silero VAD")
+                    wake_text = ""
                     if self.config.wakeword_engine_enabled:
                         detected, score = self._wakeword_detector.detect(wake_audio)
                         self._last_wake_text = f"{self.config.wake_phrase} score={score:.4f}" if detected else ""
@@ -671,8 +762,33 @@ class SpeechArmController:
                         self._mark_status("wake matched; armed for drag selection")
                         continue
 
+                    same_utterance_command = command_after_wake_phrase(wake_text, self.config.wake_phrase)
+                    if same_utterance_command:
+                        self._last_command_text = same_utterance_command
+                        self._mark_status(f"captured spoken input from wake audio: {same_utterance_command}")
+                        self.arm_callback(same_utterance_command, input_pending=False)
+                        continue
+
                     self._mark_status(f"wake phrase matched via {wake_match}; listening for spoken task input")
                     self.arm_callback("[input pending]", input_pending=True)
+
+                    if same_utterance_command is None and self.config.wakeword_engine_enabled and wake_match.startswith("openWakeWord"):
+                        try:
+                            self._mark_status("wake matched; checking wake audio for spoken task input")
+                            wake_text = self._transcribe_audio(wake_audio)
+                            self._last_wake_text = wake_text or self._last_wake_text
+                            same_utterance_command = command_after_wake_phrase(wake_text, self.config.wake_phrase)
+                            if same_utterance_command is None and wake_text:
+                                same_utterance_command = wake_text
+                            if same_utterance_command:
+                                self._last_command_text = same_utterance_command
+                                self._mark_status(f"captured spoken input from wake audio: {same_utterance_command}")
+                                self.spoken_input_callback(same_utterance_command)
+                                continue
+                        except Exception as error:
+                            self._last_error = f"Wake word heard; wake-audio command transcription failed: {error}"
+                            self._mark_status("wake matched; wake-audio command transcription failed, listening for spoken task input")
+
                     try:
                         with microphone as source:
                             command_audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)

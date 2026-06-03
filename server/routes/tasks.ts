@@ -1,31 +1,27 @@
 import { Router } from 'express';
-import { deleteTask, getAllTasks, getRecentTaskByDescription, getTask, insertTask, markTaskViewed, saveProject, setAppSetting, updateTask } from '../db/queries.js';
+import { deleteTask, getAllTasks, getRecentTaskByDescription, getTask, markTaskViewed, saveProject, setAppSetting, updateTask } from '../db/queries.js';
 import { parseRunSettingsBody } from '../agent-settings.js';
 import { broadcast } from '../events.js';
 import { toErrorMessage } from '../errors.js';
-import {
-  buildTaskExecutionRequest,
-  buildTaskPlanningRequest,
-  buildTaskPlanningSystemPrompt,
-} from '../prompts/task-agent.js';
 import { defaultRuntime, parseRuntimeValue } from '../runtime-config.js';
-import { startTaskRun } from '../task-runner.js';
 import { parseWorkspacePath } from '../workspace-access.js';
 import { CURRENT_PROJECT_SETTING_KEY } from './projects.js';
 import { TASK_KINDS, TASK_MODES, TASK_STATUSES } from '../../shared/types.js';
-import type { Task, TaskKind, TaskMode, TaskStatus } from '../../shared/types.js';
+import type { TaskKind, TaskMode, TaskStatus } from '../../shared/types.js';
+import { createTaskRecord, generateTaskTitle, startTaskActivationRun, startTaskImmediately, startTaskPlanningRun } from '../task-service.js';
 import {
   appendAttachmentContext,
   attachmentUploadMiddleware,
   cleanupUploadedAttachments,
+  deleteTaskAttachments,
   saveTaskAttachments,
   uploadedAttachments,
 } from '../attachments.js';
 import { enrichImageAttachmentContext } from '../image-context.js';
+import { notifyTaskCreated } from '../native-notifications.js';
 
 export const tasksRouter = Router();
 
-const LOW_INFORMATION_TITLES = new Set(['?', 'hi', 'hello', 'hey', 'yo']);
 const RECENT_TASK_DEDUPE_MS = 10_000;
 
 tasksRouter.get('/', (req, res) => {
@@ -39,17 +35,6 @@ tasksRouter.get('/:id', (req, res) => {
   if (!task) return res.status(404).json({ error: 'Task not found' });
   res.json({ task });
 });
-
-function generateTitle(text: string): string {
-  const firstLine = text.split(/\n/)[0].trim();
-  const normalizedFirstLine = firstLine.toLowerCase().replace(/\s+/g, ' ').replace(/[.!?]+$/g, '').trim();
-  if (!normalizedFirstLine || LOW_INFORMATION_TITLES.has(normalizedFirstLine)) return 'Untitled task';
-
-  const firstSentence = firstLine.split(/[.!?]/)[0].trim();
-  if (!firstSentence) return text.slice(0, 60).trim() || 'Untitled task';
-  if (firstSentence.length <= 60) return firstSentence;
-  return firstSentence.slice(0, 57) + '...';
-}
 
 function parseTaskMode(value: unknown): TaskMode {
   if (value === undefined || value === null || value === '') return 'direct';
@@ -78,31 +63,11 @@ function parseBooleanFlag(value: unknown, fieldName: string): boolean {
   throw new Error(`${fieldName} must be a boolean`);
 }
 
-function startTaskImmediately(task: Task): Task {
-  const started = updateTask(task.id, { status: 'in_progress' }) ?? task;
-
-  if (started.task_mode === 'plan') {
-    startTaskRun(
-      started,
-      buildTaskPlanningRequest({ title: started.title, description: started.description }),
-      {
-        systemMessage: buildTaskPlanningSystemPrompt({
-          title: started.title,
-          description: started.description,
-          workspacePath: started.workspace_path,
-        }),
-      },
-    );
-    return started;
-  }
-
-  startTaskRun(started, started.description ?? started.title);
-  return started;
-}
-
 tasksRouter.post('/', attachmentUploadMiddleware, async (req, res) => {
+  const files = uploadedAttachments(req);
   const { description, title } = req.body;
   if (!description || typeof description !== 'string') {
+    await cleanupUploadedAttachments(files);
     return res.status(400).json({ error: 'description is required' });
   }
 
@@ -110,10 +75,13 @@ tasksRouter.post('/', attachmentUploadMiddleware, async (req, res) => {
   try {
     shouldStart = parseBooleanFlag(req.body.start ?? req.body.startImmediately ?? req.body.run, 'start');
   } catch (error) {
+    await cleanupUploadedAttachments(files);
     return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid task settings' });
   }
 
-  const recentDuplicate = getRecentTaskByDescription(description, Date.now() - RECENT_TASK_DEDUPE_MS);
+  const recentDuplicate = files.length === 0
+    ? getRecentTaskByDescription(description, Date.now() - RECENT_TASK_DEDUPE_MS)
+    : undefined;
   if (recentDuplicate) {
     if (shouldStart && recentDuplicate.status === 'pending') {
       try {
@@ -141,25 +109,25 @@ tasksRouter.post('/', attachmentUploadMiddleware, async (req, res) => {
     taskMode = parseTaskMode(req.body.taskMode ?? req.body.task_mode);
     taskKind = parseTaskKind(req.body.taskKind ?? req.body.task_kind);
   } catch (error) {
+    await cleanupUploadedAttachments(files);
     return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid task settings' });
   }
 
   const resolvedTitle = title && typeof title === 'string' && title.trim()
     ? title.trim()
-    : generateTitle(description);
-  let task = insertTask({
+    : generateTaskTitle(description);
+  let task = createTaskRecord({
     title: resolvedTitle,
     description,
     status: 'pending',
-    task_kind: taskKind,
-    task_mode: taskMode,
-    workspace_path: workspacePath ?? null,
-    agent_runtime: runtime ?? runSettings.taskFields.agent_runtime ?? defaultRuntime(),
-    agent_model: runSettings.taskFields.agent_model ?? null,
-    reasoning_effort: runSettings.taskFields.reasoning_effort ?? null,
+    taskKind,
+    taskMode,
+    workspacePath: workspacePath ?? null,
+    runtime: runtime ?? runSettings.taskFields.agent_runtime ?? defaultRuntime(),
+    model: runSettings.taskFields.agent_model ?? null,
+    reasoningEffort: runSettings.taskFields.reasoning_effort ?? null,
   });
 
-  const files = uploadedAttachments(req);
   try {
     const attachments = await enrichImageAttachmentContext(await saveTaskAttachments(task.id, files));
     if (attachments.length > 0) {
@@ -169,6 +137,7 @@ tasksRouter.post('/', attachmentUploadMiddleware, async (req, res) => {
     }
   } catch (error) {
     deleteTask(task.id);
+    await deleteTaskAttachments(task.id).catch(() => undefined);
     return res.status(400).json({ error: toErrorMessage(error, 'Failed to save attachments') });
   } finally {
     await cleanupUploadedAttachments(files);
@@ -185,6 +154,7 @@ tasksRouter.post('/', attachmentUploadMiddleware, async (req, res) => {
       task = startTaskImmediately(task);
     } catch (error) {
       const reverted = updateTask(task.id, { status: 'pending' }) ?? task;
+      notifyTaskCreated(reverted);
       broadcast({ type: 'task_created', task: reverted });
       return res.status(409).json({
         error: toErrorMessage(error, 'Task was created but could not be activated'),
@@ -192,21 +162,12 @@ tasksRouter.post('/', attachmentUploadMiddleware, async (req, res) => {
     }
   }
 
+  notifyTaskCreated(task);
   broadcast({ type: 'task_created', task });
 
   if (!shouldStart && task.task_mode === 'plan') {
     try {
-      startTaskRun(
-        task,
-        buildTaskPlanningRequest({ title: task.title, description: task.description }),
-        {
-          systemMessage: buildTaskPlanningSystemPrompt({
-            title: task.title,
-            description: task.description,
-            workspacePath: task.workspace_path,
-          }),
-        },
-      );
+      startTaskPlanningRun(task);
     } catch {
       // Keep the task in Pending even if the planning run cannot start immediately.
     }
@@ -248,10 +209,14 @@ tasksRouter.post('/:id/viewed', (req, res) => {
   res.json({ task });
 });
 
-tasksRouter.delete('/:id', (req, res) => {
-  const deleted = deleteTask(req.params.id);
+tasksRouter.delete('/:id', async (req, res) => {
+  const taskId = req.params.id;
+  const deleted = deleteTask(taskId);
   if (!deleted) return res.status(404).json({ error: 'Task not found' });
-  broadcast({ type: 'task_deleted', taskId: req.params.id });
+  await deleteTaskAttachments(taskId).catch((error) => {
+    console.warn(`Failed to delete attachments for task ${taskId}:`, error);
+  });
+  broadcast({ type: 'task_deleted', taskId });
   res.json({ ok: true });
 });
 
@@ -270,10 +235,7 @@ tasksRouter.post('/:id/move', (req, res) => {
 
   if (current.status === 'pending' && status === 'in_progress') {
     try {
-      const activationPrompt = updated.task_mode === 'plan' && updated.last_agent_response_at !== null
-        ? buildTaskExecutionRequest({ title: updated.title, description: updated.description })
-        : (updated.description ?? updated.title);
-      startTaskRun(updated, activationPrompt);
+      startTaskActivationRun(updated);
     } catch (error) {
       const reverted = updateTask(req.params.id, { status: current.status });
       if (reverted) broadcast({ type: 'task_updated', task: reverted });

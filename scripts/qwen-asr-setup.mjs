@@ -233,9 +233,10 @@ export function ensureQwenAsrEnvironment(options = {}) {
     QWEN_ASR_MAX_AUDIO_MB: '25',
   };
 
+  ensureEnvFiles(values, { writeLocalEnv, writeExampleEnv, exampleValues });
+  for (const [key, value] of Object.entries(values)) process.env[key] = value;
+
   if (!enabled) {
-    ensureEnvFiles(values, { writeLocalEnv, writeExampleEnv, exampleValues });
-    for (const [key, value] of Object.entries(values)) process.env[key] = value;
     console.log(`[qwen-asr-setup] QWEN_ASR_ENABLED=${values.QWEN_ASR_ENABLED}`);
     console.log('[qwen-asr-setup] qwen-asr disabled');
     return { python, installed: false, venvDir: qwenVenvDir(), binDir: qwenVenvBinDir() };
@@ -261,9 +262,6 @@ export function ensureQwenAsrEnvironment(options = {}) {
       installQwenAsr(python);
     }
   }
-
-  ensureEnvFiles(values, { writeLocalEnv, writeExampleEnv, exampleValues });
-  for (const [key, value] of Object.entries(values)) process.env[key] = value;
 
   const installed = existsSync(python) && packageInstalled(python, 'qwen_asr');
   console.log(`[qwen-asr-setup] QWEN_ASR_ENABLED=${values.QWEN_ASR_ENABLED}`);

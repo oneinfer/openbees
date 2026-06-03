@@ -11,13 +11,14 @@ import { CronPage } from './components/CronPage';
 import { SkillsPage } from './components/SkillsPage';
 import { FileBrowserPage } from './components/FileBrowserPage';
 import { ProjectsPage } from './components/ProjectsPage';
+import { ActivityPage } from './components/ActivityPage';
 import { TaskCreatedToast } from './components/TaskCreatedToast';
 import { useActivityCapture } from './hooks/useActivityCapture';
 import { useTasks } from './hooks/useTasks';
 import { useTheme } from './hooks/useTheme';
 import { updateCurrentProject } from './lib/api';
 import { useStore } from './lib/store';
-import { normalizeProjectPath, projectHref } from './lib/projects';
+import { normalizeProjectPath } from './lib/projects';
 
 function AppShell() {
   useTasks();
@@ -34,6 +35,7 @@ function AppShell() {
         <Routes>
           <Route path="/" element={<Board />} />
           <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/activity" element={<ActivityPage />} />
           <Route path="/chats" element={<ChatPage />} />
           <Route path="/chats/:chatId" element={<ChatPage />} />
           <Route path="/tasks/new" element={<NewTaskPage />} />
@@ -60,7 +62,7 @@ function useStartupProjectRedirect() {
     if (attemptedRedirect.current || !currentProjectLoaded) return;
     attemptedRedirect.current = true;
     if (location.pathname === '/' && currentProjectPath) {
-      navigate(projectHref(currentProjectPath), { replace: true });
+      navigate(`/tasks/new?workspacePath=${encodeURIComponent(currentProjectPath)}`, { replace: true });
     }
   }, [currentProjectLoaded, currentProjectPath, location.pathname, navigate]);
 }
@@ -77,7 +79,6 @@ function useRememberCurrentProject() {
     const taskMatch = location.pathname.match(/^\/tasks\/([^/]+)$/);
 
     if (location.pathname === '/projects') return normalizeProjectPath(params.get('path'));
-    if (location.pathname === '/tasks/new') return normalizeProjectPath(params.get('workspacePath'));
     if (taskMatch) return normalizeProjectPath(tasks.find((task) => task.id === taskMatch[1])?.workspace_path);
     return null;
   }, [location.pathname, location.search, tasks]);

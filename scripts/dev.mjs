@@ -5,7 +5,7 @@ import { ensureActivityDaemonEnvironment } from './activity-daemon-setup.mjs';
 import { ensureSupportedNodeVersion } from './runtime.mjs';
 
 ensureSupportedNodeVersion('npm run dev');
-ensureHermesEnvironment({ writeExampleEnv: false });
+ensureHermesEnvironment({ writeExampleEnv: true });
 ensureQwenAsrEnvironment({ enabled: true, writeExampleEnv: true });
 ensureActivityDaemonEnvironment({ failOnInstallError: true, writeExampleEnv: true });
 

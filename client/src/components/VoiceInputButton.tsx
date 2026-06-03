@@ -8,17 +8,19 @@ import type { AsrStatusResponse } from '@shared/types';
 interface VoiceInputButtonProps {
   disabled?: boolean;
   onTranscript: (text: string) => void;
+  onAudio?: (audio: Blob) => Promise<void>;
   onError?: (message: string | null) => void;
 }
 
 export function VoiceInputButton({
   disabled = false,
   onTranscript,
+  onAudio,
   onError,
 }: VoiceInputButtonProps) {
   const [status, setStatus] = useState<AsrStatusResponse | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const recorder = useVoiceRecorder(onTranscript);
+  const recorder = useVoiceRecorder(onTranscript, onAudio);
 
   useEffect(() => {
     let cancelled = false;

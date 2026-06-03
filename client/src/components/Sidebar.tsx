@@ -15,6 +15,7 @@ import {
   Loader2,
   MessageSquare,
   Plus,
+  Inbox,
 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { isEditableTarget } from '../lib/keyboard';
@@ -45,6 +46,7 @@ export function Sidebar() {
   const projects = useStore((s) => s.projects);
   const tasks = useStore((s) => s.tasks);
   const streamingTaskIds = useStore((s) => s.streamingTaskIds);
+  const rememberedProjectPath = useStore((s) => s.currentProjectPath);
   const upsertProject = useStore((s) => s.upsertProject);
   const projectGroups = useMemo(() => groupTasksByProject(tasks, streamingTaskIds, projects), [projects, tasks, streamingTaskIds]);
   const recentChats = useMemo(
@@ -65,8 +67,15 @@ export function Sidebar() {
     if (location.pathname === '/projects') {
       return normalizeProjectPath(new URLSearchParams(location.search).get('path'));
     }
-    return normalizeProjectPath(activeTask?.workspace_path);
-  }, [activeTask?.workspace_path, location.pathname, location.search]);
+    if (location.pathname === '/tasks/new') {
+      return normalizeProjectPath(new URLSearchParams(location.search).get('workspacePath')) ?? rememberedProjectPath;
+    }
+    return normalizeProjectPath(activeTask?.workspace_path) ?? rememberedProjectPath;
+  }, [activeTask?.workspace_path, location.pathname, location.search, rememberedProjectPath]);
+
+  const newTaskPath = currentProjectPath
+    ? `/tasks/new?workspacePath=${encodeURIComponent(currentProjectPath)}`
+    : '/tasks/new';
 
   useEffect(() => {
     let chordKey: string | null = null;
@@ -76,7 +85,7 @@ export function Sidebar() {
       const mod = isMac ? e.metaKey : e.ctrlKey;
       if (mod && e.shiftKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        navigate('/tasks/new');
+        navigate(newTaskPath);
         return;
       }
 
@@ -87,7 +96,7 @@ export function Sidebar() {
       if (chordKey === 'g') {
         chordKey = null;
         if (chordTimeout) clearTimeout(chordTimeout);
-        const routes: Record<string, string> = { t: '/', c: '/chats', p: '/projects', f: '/files' };
+        const routes: Record<string, string> = { t: '/', c: '/chats', p: '/projects', f: '/files', a: '/activity' };
         if (routes[key]) {
           e.preventDefault();
           navigate(routes[key]);
@@ -109,7 +118,7 @@ export function Sidebar() {
       window.removeEventListener('keydown', handleKeyDown);
       if (chordTimeout) clearTimeout(chordTimeout);
     };
-  }, [navigate]);
+  }, [navigate, newTaskPath]);
 
   useEffect(() => {
     if (!currentProjectPath) return;
@@ -192,7 +201,7 @@ export function Sidebar() {
           <SidebarLink
             icon={<SquarePen size={18} />}
             label="New Task"
-            to="/tasks/new"
+            to={newTaskPath}
             active={isActive('/tasks/new')}
             collapsed={collapsed}
             shortcut={isMac ? 'Shift+Cmd+O' : 'Ctrl+Shift+O'}
@@ -220,6 +229,14 @@ export function Sidebar() {
             active={isActive('/projects')}
             collapsed={collapsed}
             shortcut={['G', 'P']}
+          />
+          <SidebarLink
+            icon={<Inbox size={18} />}
+            label="Activity"
+            to="/activity"
+            active={isActive('/activity')}
+            collapsed={collapsed}
+            shortcut={['G', 'A']}
           />
           <SidebarLink
             icon={<Folder size={18} />}

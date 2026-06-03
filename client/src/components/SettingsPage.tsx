@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bot, CheckCircle2, Download, LoaderCircle, Monitor, Moon, Sun } from 'lucide-react';
+import { Bell, BellOff, Bot, CheckCircle2, Download, LoaderCircle, Monitor, Moon, Sun } from 'lucide-react';
 import { useTheme, type ThemePreference } from '../hooks/useTheme';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { installAgentRuntime, updateAgentDefaults } from '../lib/api';
@@ -10,6 +10,13 @@ import {
   type AgentRuntime,
   type ReasoningEffort,
 } from '@shared/types';
+import {
+  areTaskCreatedSystemNotificationsEnabled,
+  getTaskCreatedSystemNotificationPermission,
+  requestTaskCreatedSystemNotificationPermission,
+  setTaskCreatedSystemNotificationsEnabled,
+  subscribeTaskCreatedSystemNotificationPreference,
+} from '../lib/taskNotification';
 
 const themeOptions: { value: ThemePreference; label: string; icon: typeof Sun }[] = [
   { value: 'system', label: 'System', icon: Monitor },
@@ -30,12 +37,21 @@ export function SettingsPage() {
   const [installingRuntime, setInstallingRuntime] = useState<AgentRuntime | null>(null);
   const [installStatus, setInstallStatus] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState(getTaskCreatedSystemNotificationPermission);
+  const [systemNotificationsEnabled, setSystemNotificationsEnabled] = useState(areTaskCreatedSystemNotificationsEnabled);
+
+  const refreshNotificationSettings = useCallback(() => {
+    setNotificationPermission(getTaskCreatedSystemNotificationPermission());
+    setSystemNotificationsEnabled(areTaskCreatedSystemNotificationsEnabled());
+  }, []);
 
   useEffect(() => {
     if (!savedDefaults) return;
     const timer = setTimeout(() => setSavedDefaults(false), 2000);
     return () => clearTimeout(timer);
   }, [savedDefaults]);
+
+  useEffect(() => subscribeTaskCreatedSystemNotificationPreference(refreshNotificationSettings), [refreshNotificationSettings]);
 
   const defaultRuntime = agentDefaults?.runtime ?? 'hermes';
   const runtimeMeta = runtimeOptions.find((option) => option.id === defaultRuntime);
@@ -98,7 +114,26 @@ export function SettingsPage() {
     }
   }, [installingRuntime, refreshRuntimes, runtimeOptions]);
 
+  const enableSystemNotifications = useCallback(async () => {
+    await requestTaskCreatedSystemNotificationPermission();
+    refreshNotificationSettings();
+  }, [refreshNotificationSettings]);
+
+  const disableSystemNotifications = useCallback(() => {
+    setTaskCreatedSystemNotificationsEnabled(false);
+    refreshNotificationSettings();
+  }, [refreshNotificationSettings]);
+
   const installableRuntimes = runtimeOptions.filter((runtime) => installRuntimeIds.includes(runtime.id));
+  const notificationsSupported = notificationPermission !== 'unsupported';
+  const notificationsBlocked = notificationPermission === 'denied';
+  const notificationStatus = !notificationsSupported
+    ? 'Not supported in this browser'
+    : notificationsBlocked
+      ? 'Blocked by browser settings'
+      : systemNotificationsEnabled
+        ? 'Enabled'
+        : 'Off';
 
   return (
     <div className="flex-1 p-6 overflow-y-auto">
@@ -248,6 +283,45 @@ export function SettingsPage() {
               <span className="text-xs text-zinc-500 dark:text-zinc-400">
                 This runtime uses only its command configuration.
               </span>
+            )}
+          </div>
+        </section>
+
+        <section
+          aria-labelledby="task-notifications-title"
+          className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 sm:p-5"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h2 id="task-notifications-title" className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                Task notifications
+              </h2>
+              <p className="mt-1 text-sm leading-5 text-zinc-500 dark:text-zinc-400">
+                Show an operating system notification when Bees creates a task, including tasks created by activity capture or another open tab.
+              </p>
+              <p className={`mt-2 text-xs ${notificationsBlocked ? 'text-red-500 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}`}>
+                {notificationStatus}
+              </p>
+            </div>
+            {systemNotificationsEnabled ? (
+              <button
+                type="button"
+                onClick={disableSystemNotifications}
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700/70"
+              >
+                <BellOff size={14} />
+                Disable
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void enableSystemNotifications()}
+                disabled={!notificationsSupported || notificationsBlocked}
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700/70"
+              >
+                <Bell size={14} />
+                Enable
+              </button>
             )}
           </div>
         </section>

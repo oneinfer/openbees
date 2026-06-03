@@ -17,6 +17,7 @@ import { useStore, optimisticMoveTask } from '../lib/store';
 import { createTask, deleteTask, moveTask } from '../lib/api';
 import { toErrorMessage } from '../lib/format';
 import { isBoardTask } from '../lib/taskState';
+import { primeTaskCreatedNotifications } from '../lib/taskNotification';
 import { Column } from './Column';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { TaskCardOverlay } from './TaskCard';
@@ -135,6 +136,7 @@ export function Board() {
 
     setIsCreatingPullRequestTask(true);
     setPullRequestError(null);
+    primeTaskCreatedNotifications();
     try {
       const created = await createTask(
         description,

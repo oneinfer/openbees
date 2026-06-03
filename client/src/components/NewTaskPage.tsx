@@ -10,17 +10,18 @@ import {
   createComposerAttachments,
   type ComposerAttachment,
 } from './AttachmentPicker';
-import { createTask, pickWorkspaceDirectory, updateCurrentProject } from '../lib/api';
+import { ActivityCaptureButton } from './ActivityCaptureButton';
+import { createTask, pickWorkspaceDirectory, transcribeTaskIntentAudio, updateCurrentProject } from '../lib/api';
 import { clearActivityTaskDraft, loadActivityTaskDraft } from '../lib/activityDraft';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { isEditableTarget, handleChatKeyDown } from '../lib/keyboard';
 import { toErrorMessage } from '../lib/format';
 import { useStore } from '../lib/store';
-import { announceTaskCreated, primeTaskCreatedSound } from '../lib/taskNotification';
+import { announceTaskCreated, primeTaskCreatedNotifications, primeTaskCreatedSound } from '../lib/taskNotification';
 
 export function NewTaskPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const requestedWorkspacePath = searchParams.get('workspacePath')?.trim() ?? '';
   const activityDraftId = searchParams.get('activityDraft');
   const [input, setInput] = useState('');
@@ -34,15 +35,35 @@ export function NewTaskPage() {
   const [isPickingWorkspace, setIsPickingWorkspace] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceIntentMessage, setVoiceIntentMessage] = useState<string | null>(null);
+  const [captureStatus, setCaptureStatus] = useState<string | null>(null);
+  const [captureError, setCaptureError] = useState<string | null>(null);
   const [isApplyingActivityDraft, setIsApplyingActivityDraft] = useState(false);
-  const [activityDraftAutoSubmitId, setActivityDraftAutoSubmitId] = useState<string | null>(null);
+  const [activityCaptureMessage, setActivityCaptureMessage] = useState<string | null>(null);
   const currentProjectPath = useStore((s) => s.currentProjectPath);
   const setCurrentProjectPath = useStore((s) => s.setCurrentProjectPath);
   const upsertProject = useStore((s) => s.upsertProject);
   const { defaults, runtimeOptions, runtime, setRuntime, modelGroups, runtimeDefaultModel, model, setModel, reasoningEffort, setReasoningEffort, isLoading } = useAgentConfig();
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const appliedCurrentProjectRef = useRef(false);
+  const workspaceEditedRef = useRef(false);
   const normalizedWorkspacePath = workspacePath.trim();
+
+  const updateWorkspaceSearchParam = useCallback((path: string | null) => {
+    const next = new URLSearchParams(searchParams);
+    if (path?.trim()) next.set('workspacePath', path.trim());
+    else next.delete('workspacePath');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const rememberWorkspacePath = useCallback((path: string | null) => {
+    const normalized = path?.trim() || null;
+    setCurrentProjectPath(normalized);
+    void updateCurrentProject(normalized)
+      .then((current) => {
+        if (current.project) upsertProject(current.project);
+      })
+      .catch(console.error);
+  }, [setCurrentProjectPath, upsertProject]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -54,6 +75,7 @@ export function NewTaskPage() {
     if (!draft) return;
     let cancelled = false;
     setIsApplyingActivityDraft(true);
+    setActivityCaptureMessage('Captured context loaded.');
 
     if (draft.text?.trim()) {
       setInput((current) => {
@@ -65,8 +87,13 @@ export function NewTaskPage() {
     }
 
     void (async () => {
-      if (draft.imagePath) {
-        const file = await loadActivityScreenshot(draft.imagePath, draft.imageName);
+      if (draft.imagePath || draft.imageBase64) {
+        const file = await loadActivityScreenshot(
+          draft.imagePath,
+          draft.imageName,
+          draft.imageBase64,
+          draft.imageMimeType,
+        );
         if (!cancelled && file) {
           setAttachments((current) => [...current, ...createComposerAttachments([file])]);
         }
@@ -74,7 +101,6 @@ export function NewTaskPage() {
 
       if (cancelled) return;
       clearActivityTaskDraft(draft.id);
-      setActivityDraftAutoSubmitId(draft.id);
       setIsApplyingActivityDraft(false);
     })();
 
@@ -85,13 +111,15 @@ export function NewTaskPage() {
 
   useEffect(() => {
     if (!requestedWorkspacePath) return;
+    workspaceEditedRef.current = false;
     setWorkspacePath(requestedWorkspacePath);
+    rememberWorkspacePath(requestedWorkspacePath);
     setWorkspaceError(null);
-  }, [requestedWorkspacePath]);
+  }, [rememberWorkspacePath, requestedWorkspacePath]);
 
   useEffect(() => {
-    if (requestedWorkspacePath || appliedCurrentProjectRef.current || workspacePath.trim() || !currentProjectPath) return;
-    appliedCurrentProjectRef.current = true;
+    if (requestedWorkspacePath || workspaceEditedRef.current || !currentProjectPath) return;
+    if (workspacePath.trim() === currentProjectPath) return;
     setWorkspacePath(currentProjectPath);
   }, [currentProjectPath, requestedWorkspacePath, workspacePath]);
 
@@ -108,6 +136,7 @@ export function NewTaskPage() {
     const files = attachments.map((attachment) => attachment.file);
     if ((!text && files.length === 0) || isCreating || (!defaults && isLoading)) return;
     primeTaskCreatedSound();
+    primeTaskCreatedNotifications();
     setIsCreating(true);
     setWorkspaceError(null);
     try {
@@ -140,13 +169,6 @@ export function NewTaskPage() {
     }
   }, [attachments, defaults, input, isCreating, isLoading, model, navigate, normalizedWorkspacePath, planModeEnabled, reasoningEffort, runtime, setCurrentProjectPath, upsertProject]);
 
-  useEffect(() => {
-    if (!activityDraftAutoSubmitId || isApplyingActivityDraft || isCreating) return;
-    if (!input.trim() && attachments.length === 0) return;
-    setActivityDraftAutoSubmitId(null);
-    void handleSubmit();
-  }, [activityDraftAutoSubmitId, attachments.length, handleSubmit, input, isApplyingActivityDraft, isCreating]);
-
   const handleChooseWorkspace = useCallback(async () => {
     if (isPickingWorkspace || isCreating) return;
     setIsPickingWorkspace(true);
@@ -155,20 +177,17 @@ export function NewTaskPage() {
     try {
       const result = await pickWorkspaceDirectory(normalizedWorkspacePath || null);
       if (result.path) {
+        workspaceEditedRef.current = true;
         setWorkspacePath(result.path);
-        setCurrentProjectPath(result.path);
-        void updateCurrentProject(result.path)
-          .then((current) => {
-            if (current.project) upsertProject(current.project);
-          })
-          .catch(console.error);
+        updateWorkspaceSearchParam(result.path);
+        rememberWorkspacePath(result.path);
       }
     } catch (error) {
       setWorkspaceError(toErrorMessage(error, 'Failed to open folder picker'));
     } finally {
       setIsPickingWorkspace(false);
     }
-  }, [isCreating, isPickingWorkspace, normalizedWorkspacePath, setCurrentProjectPath, upsertProject]);
+  }, [isCreating, isPickingWorkspace, normalizedWorkspacePath, rememberWorkspacePath, updateWorkspaceSearchParam]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => handleChatKeyDown(e, handleSubmit),
@@ -209,11 +228,75 @@ export function NewTaskPage() {
     });
   }, [input]);
 
+  const handleVoiceTaskIntent = useCallback(async (audio: Blob) => {
+    if (isCreating || (!defaults && isLoading)) return;
+
+    primeTaskCreatedSound();
+    primeTaskCreatedNotifications();
+    setIsCreating(true);
+    setWorkspaceError(null);
+    setVoiceError(null);
+    setVoiceIntentMessage('Deciding whether to start a task...');
+
+    try {
+      const result = await transcribeTaskIntentAudio(audio, {
+        workspacePath: normalizedWorkspacePath || null,
+        runtime,
+        model,
+        reasoningEffort,
+        taskMode: planModeEnabled ? 'plan' : 'direct',
+      });
+
+      if (result.actionTaken === 'task_created_started' && result.task) {
+        const task = result.task;
+        announceTaskCreated(`Task has been created and started in In Progress: ${task.title}`, task.id);
+        if (normalizedWorkspacePath) {
+          setCurrentProjectPath(normalizedWorkspacePath);
+          void updateCurrentProject(normalizedWorkspacePath)
+            .then((current) => {
+              if (current.project) upsertProject(current.project);
+            })
+            .catch(console.error);
+        }
+        navigate(`/tasks/${task.id}`);
+        return;
+      }
+
+      if (result.transcript.text.trim()) {
+        handleVoiceTranscript(result.transcript.text);
+      }
+      setVoiceError(result.decision.reason || result.error || 'Review the transcript and submit manually.');
+    } catch (error) {
+      setVoiceError(toErrorMessage(error, 'Failed to process voice task'));
+    } finally {
+      setVoiceIntentMessage(null);
+      setIsCreating(false);
+    }
+  }, [
+    defaults,
+    handleVoiceTranscript,
+    isCreating,
+    isLoading,
+    model,
+    navigate,
+    normalizedWorkspacePath,
+    planModeEnabled,
+    reasoningEffort,
+    runtime,
+    setCurrentProjectPath,
+    upsertProject,
+  ]);
+
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 py-8">
       <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100 mb-6">
         What do you need done?
       </h1>
+      {activityCaptureMessage && (
+        <div className="mb-4 w-full max-w-4xl rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+          {activityCaptureMessage}
+        </div>
+      )}
 
       <form className="w-full max-w-4xl" onSubmit={handleFormSubmit}>
         <div className="rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-sm overflow-hidden">
@@ -231,7 +314,10 @@ export function NewTaskPage() {
                 <button
                   type="button"
                   onClick={() => {
+                    workspaceEditedRef.current = true;
                     setWorkspacePath('');
+                    updateWorkspaceSearchParam(null);
+                    rememberWorkspacePath(null);
                     setWorkspaceError(null);
                   }}
                   disabled={isCreating || isPickingWorkspace}
@@ -266,9 +352,17 @@ export function NewTaskPage() {
                 disabled={isCreating}
                 onChange={setAttachments}
               />
+              <ActivityCaptureButton
+                disabled={isCreating}
+                inputText={input}
+                onCapture={(nextAttachments) => setAttachments((current) => [...current, ...nextAttachments])}
+                onStatus={setCaptureStatus}
+                onError={setCaptureError}
+              />
               <VoiceInputButton
                 disabled={isCreating}
                 onTranscript={handleVoiceTranscript}
+                onAudio={handleVoiceTaskIntent}
                 onError={setVoiceError}
               />
               <button
@@ -338,6 +432,27 @@ export function NewTaskPage() {
               </p>
             </div>
           )}
+          {captureError && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-red-500 dark:text-red-400">
+                {captureError}
+              </p>
+            </div>
+          )}
+          {captureStatus && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                {captureStatus}
+              </p>
+            </div>
+          )}
+          {voiceIntentMessage && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                {voiceIntentMessage}
+              </p>
+            </div>
+          )}
         </div>
         <p className="text-xs text-zinc-400 dark:text-zinc-500 text-center mt-3">
           {planModeEnabled
@@ -349,7 +464,19 @@ export function NewTaskPage() {
   );
 }
 
-async function loadActivityScreenshot(path: string, name?: string): Promise<File | null> {
+async function loadActivityScreenshot(
+  path?: string,
+  name?: string,
+  base64?: string,
+  mimeType?: string,
+): Promise<File | null> {
+  if (base64) {
+    const file = fileFromBase64(base64, name || path?.split(/[\\/]/).pop() || 'activity-screenshot.png', mimeType);
+    if (file) return file;
+  }
+
+  if (!path) return null;
+
   try {
     const response = await fetch(`/api/files/view?path=${encodeURIComponent(path)}`);
     if (!response.ok) return null;
@@ -362,5 +489,44 @@ async function loadActivityScreenshot(path: string, name?: string): Promise<File
     });
   } catch {
     return null;
+  }
+}
+
+function fileFromBase64(base64: string, name: string, mimeType = 'image/png'): File | null {
+  try {
+    const normalized = base64.replace(/^data:[^;,]+;base64,/, '');
+    const binary = atob(normalized);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    return new File([bytes], ensureImageExtension(name, mimeType), {
+      type: mimeType,
+      lastModified: Date.now(),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function ensureImageExtension(name: string, mimeType: string): string {
+  if (/\.[a-z0-9]+$/i.test(name)) return name;
+  return `${name}.${extensionForMimeType(mimeType)}`;
+}
+
+function extensionForMimeType(mimeType: string): string {
+  switch (mimeType.toLowerCase()) {
+    case 'image/jpeg':
+    case 'image/jpg':
+      return 'jpg';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    case 'image/bmp':
+      return 'bmp';
+    default:
+      return 'png';
   }
 }

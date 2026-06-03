@@ -8,6 +8,7 @@ import {
   composerAttachmentsFromClipboard,
   type ComposerAttachment,
 } from './AttachmentPicker';
+import { ActivityCaptureButton } from './ActivityCaptureButton';
 import { ArtifactViewer, ChatArtifacts, collectChatArtifacts, type ChatArtifact } from './ChatArtifacts';
 import { MarkdownContent } from './MarkdownContent';
 import { useChat, ToolProgressEvent } from '../hooks/useChat';
@@ -72,6 +73,7 @@ const TOOL_ICONS: Record<string, typeof Terminal> = {
 const CHAT_COLUMN_CLASS = 'w-full max-w-[760px] mx-auto';
 const ATTACHMENT_CONTEXT_PATTERN = /\n*\s*The user attached the following file(?:s)?\.[\s\S]*?<attachments>[\s\S]*?<\/attachments>\s*$/;
 const ATTACHMENTS_PATTERN = /<attachments>[\s\S]*?<\/attachments>/;
+const ACTIVITY_CONTEXT_SECTION_PATTERN = /\n*(?:Captured selected text|Active window|Captured image context is available for inspection):[\s\S]*?(?=\n\n(?:Captured selected text|Active window|Captured image context is available for inspection):|$)/gi;
 
 function getToolIcon(name: string) {
   return TOOL_ICONS[name] ?? Wrench;
@@ -82,7 +84,14 @@ function formatToolName(name: string): string {
 }
 
 function displayMessageContent(content: string): string {
-  return content.replace(ATTACHMENT_CONTEXT_PATTERN, '').trimEnd();
+  return stripActivityContextSections(content.replace(ATTACHMENT_CONTEXT_PATTERN, '')).trim();
+}
+
+function stripActivityContextSections(content: string): string {
+  const withoutActivitySections = content.replace(ACTIVITY_CONTEXT_SECTION_PATTERN, '');
+  const userRequestMatch = withoutActivitySections.match(/^\s*User request:\s*\n([\s\S]*?)\s*$/i);
+  if (userRequestMatch) return userRequestMatch[1];
+  return withoutActivitySections;
 }
 
 function parseMessageAttachments(content: string): ChatAttachment[] {
@@ -111,6 +120,10 @@ function parseMessageAttachments(content: string): ChatAttachment[] {
       kind,
     };
   }).filter((attachment) => attachment.path);
+}
+
+function displayMessageAttachments(attachments: ChatAttachment[]): ChatAttachment[] {
+  return attachments;
 }
 
 function MessageAttachmentList({
@@ -254,6 +267,8 @@ export function TaskChat({
   const [selectedAttachment, setSelectedAttachment] = useState<ChatAttachment | null>(null);
   const [loadedTaskId, setLoadedTaskId] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [captureStatus, setCaptureStatus] = useState<string | null>(null);
+  const [captureError, setCaptureError] = useState<string | null>(null);
   const startupRef = useRef({ taskId, initialMessage, initialSettings });
   if (startupRef.current.taskId !== taskId) {
     startupRef.current = { taskId, initialMessage, initialSettings };
@@ -373,7 +388,7 @@ export function TaskChat({
             {messages.map((msg, idx) => {
               if (msg.role === 'user') {
                 const userContent = displayMessageContent(msg.content);
-                const messageAttachments = parseMessageAttachments(msg.content);
+                const messageAttachments = displayMessageAttachments(parseMessageAttachments(msg.content));
                 return (
                   <div key={msg.id} className="flex justify-end">
                     <div className="max-w-[85%] rounded-2xl bg-zinc-100 px-4 py-2.5 text-sm leading-relaxed text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
@@ -461,6 +476,13 @@ export function TaskChat({
                 disabled={composerControlsDisabled}
                 onChange={setAttachments}
               />
+              <ActivityCaptureButton
+                disabled={composerControlsDisabled}
+                inputText={input}
+                onCapture={(nextAttachments) => setAttachments((current) => [...current, ...nextAttachments])}
+                onStatus={setCaptureStatus}
+                onError={setCaptureError}
+              />
               <VoiceInputButton
                 disabled={composerControlsDisabled}
                 onTranscript={handleVoiceTranscript}
@@ -494,6 +516,16 @@ export function TaskChat({
           {voiceError && (
             <div className="px-4 pb-3">
               <p className="text-xs text-red-500 dark:text-red-400">{voiceError}</p>
+            </div>
+          )}
+          {captureError && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-red-500 dark:text-red-400">{captureError}</p>
+            </div>
+          )}
+          {captureStatus && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">{captureStatus}</p>
             </div>
           )}
         </div>

@@ -1,11 +1,13 @@
 import type {
   AgentDefaults,
+  ActivityContext,
   AgentModelsResponse,
   AgentRuntime,
   AgentRuntimeInstallResponse,
   AgentRuntimesResponse,
   AgentRunSettings,
   AsrStatusResponse,
+  AsrTaskIntentResponse,
   AsrTranscriptionResponse,
   CronJob,
   CronRun,
@@ -204,6 +206,33 @@ export function transcribeAudio(audio: Blob, language?: string) {
   });
 }
 
+export function transcribeTaskIntentAudio(
+  audio: Blob,
+  options: {
+    language?: string;
+    workspacePath?: string | null;
+    runtime?: AgentRuntime | null;
+    model?: string | null;
+    reasoningEffort?: ReasoningEffort | null;
+    taskMode?: TaskMode;
+  } = {},
+) {
+  const formData = new FormData();
+  const extension = audio.type.includes('wav') ? 'wav' : audio.type.includes('ogg') ? 'ogg' : 'webm';
+  formData.append('audio', audio, `speech.${extension}`);
+  appendOptionalFormValue(formData, 'language', options.language);
+  appendOptionalFormValue(formData, 'workspacePath', options.workspacePath);
+  appendOptionalFormValue(formData, 'runtime', options.runtime);
+  appendOptionalFormValue(formData, 'model', options.model);
+  appendOptionalFormValue(formData, 'reasoningEffort', options.reasoningEffort);
+  appendOptionalFormValue(formData, 'taskMode', options.taskMode);
+
+  return request<AsrTaskIntentResponse>('/asr/transcribe-task-intent', {
+    method: 'POST',
+    body: formData,
+  });
+}
+
 export function suppressActivitySpeechInput(reason = 'browser voice input', ttlSeconds = 180) {
   return request<{ token: string; suppressed: boolean; lease_count: number; ttl_seconds: number }>('/activity/speech/suppress', {
     method: 'POST',
@@ -215,6 +244,49 @@ export function releaseActivitySpeechInput(token?: string | null) {
   return request<{ suppressed: boolean; lease_count: number }>('/activity/speech/release', {
     method: 'POST',
     body: JSON.stringify(token ? { token } : {}),
+  });
+}
+
+export function updateActivityAgentSettings(settings: AgentRunSettings) {
+  return request<{ runtime: AgentRuntime; model: string | null; reasoningEffort: ReasoningEffort | null; updatedAt: number }>('/activity/active-agent-settings', {
+    method: 'POST',
+    body: JSON.stringify(settings),
+  });
+}
+
+export function armActivitySelection(spokenInput?: string | null) {
+  return request<{ armed: boolean; timeout_seconds?: number; spoken_input?: string; suppressed?: boolean }>('/activity/arm', {
+    method: 'POST',
+    body: JSON.stringify({ spoken_input: spokenInput?.trim() || '[input pending]' }),
+  });
+}
+
+export function captureActivityScreenshot(spokenInput?: string | null) {
+  return request<Record<string, unknown>>('/activity/capture', {
+    method: 'POST',
+    body: JSON.stringify({
+      trigger: 'manual_screenshot',
+      spoken_input: spokenInput?.trim() || '[input pending]',
+      include_base64: true,
+      include_full_screen: true,
+      include_cursor_crop: false,
+      include_selection_crop: false,
+    }),
+  });
+}
+
+export function fetchActivityContexts() {
+  return request<{ contexts: ActivityContext[] }>('/activity-contexts');
+}
+
+export function deleteActivityContext(id: string) {
+  return request<{ ok: boolean }>(`/activity-contexts/${id}`, { method: 'DELETE' });
+}
+
+export function promoteActivityContext(id: string, title?: string, description?: string) {
+  return request<{ task: Task; context: ActivityContext }>(`/activity-contexts/${id}/promote`, {
+    method: 'POST',
+    body: JSON.stringify({ title, description }),
   });
 }
 

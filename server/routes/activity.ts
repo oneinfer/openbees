@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { activityDaemon } from '../activity-daemon.js';
+import { parseRunSettingsBody } from '../agent-settings.js';
+import { getActiveActivityAgentSettings, setActiveActivityAgentSettings } from '../activity-agent-settings.js';
 
 const router = Router();
 
@@ -39,6 +41,24 @@ router.get('/events/latest', async (req, res) => {
 
 router.get('/events', async (req, res) => {
   await proxyJson(req, res);
+});
+
+router.get('/active-agent-settings', (_req, res) => {
+  res.json(getActiveActivityAgentSettings());
+});
+
+router.post('/active-agent-settings', (req, res) => {
+  try {
+    const parsed = parseRunSettingsBody(req.body);
+    const active = setActiveActivityAgentSettings({
+      runtime: parsed.taskFields.agent_runtime,
+      model: parsed.taskFields.agent_model,
+      reasoningEffort: parsed.taskFields.reasoning_effort,
+    });
+    res.json(active);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid agent settings' });
+  }
 });
 
 router.post('/arm', async (req, res) => {
