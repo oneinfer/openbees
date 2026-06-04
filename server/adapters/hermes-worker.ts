@@ -4,10 +4,11 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import type { AgentDefaults, AgentModelsResponse, CronJob, CronRun, SessionMetadata, TaskMessage } from '../../shared/types.js';
+import type { ActivityIntentDecision, AgentDefaults, AgentModelsResponse, CronJob, CronRun, SessionMetadata, TaskMessage } from '../../shared/types.js';
 import type { AgentAdapter, AgentRunOptions, StreamEvent } from './types.js';
 import type { WorkerEvent, WorkerRequest, WorkerResult, WorkerErrorPayload } from './worker-protocol.js';
 import { expandHomePrefix, resolveBeesWorkspaceDir } from '../paths.js';
+import { ACTIVITY_INTENT_SYSTEM_PROMPT, buildActivityIntentRequest, normalizeActivityIntentDecision } from '../prompts/activity-intent.js';
 
 const WORKER_READY_TIMEOUT_MS = 30_000;
 
@@ -634,5 +635,40 @@ export class HermesWorkerAdapter implements AgentAdapter {
       taskDescription,
       responseText,
     });
+  }
+
+  async judgeActivityIntent(
+    transcript: string,
+    metadata: {
+      timestamp?: string | null;
+      source?: string | null;
+      capturedText?: string | null;
+      activeWindow?: Record<string, unknown> | null;
+      images?: Record<string, unknown> | null;
+      model?: string | null;
+      reasoningEffort?: string | null;
+    } = {},
+  ): Promise<ActivityIntentDecision> {
+    const result = await this.client.request<ActivityIntentDecision>({
+      type: 'judge.activity_intent',
+      transcript,
+      timestamp: metadata.timestamp ?? null,
+      source: metadata.source ?? null,
+      capturedText: metadata.capturedText ?? null,
+      activeWindow: metadata.activeWindow ?? null,
+      images: metadata.images ?? null,
+      model: metadata.model ?? null,
+      reasoningEffort: metadata.reasoningEffort ?? null,
+      systemMessage: ACTIVITY_INTENT_SYSTEM_PROMPT,
+      prompt: buildActivityIntentRequest({
+        transcript,
+        timestamp: metadata.timestamp ?? null,
+        source: metadata.source ?? null,
+        capturedText: metadata.capturedText ?? null,
+        activeWindow: metadata.activeWindow ?? null,
+        images: metadata.images ?? null,
+      }),
+    });
+    return normalizeActivityIntentDecision(result, transcript || metadata.capturedText || '');
   }
 }

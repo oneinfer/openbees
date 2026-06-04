@@ -10,6 +10,8 @@ import {
   type AgentRuntime,
   type TaskMessage,
   type Project,
+  type ActivityContext,
+  type ActivityIntentDecision,
 } from '../../shared/types.js';
 
 const stmtAllProjects = db.prepare('SELECT * FROM projects ORDER BY updated_at DESC');
@@ -25,6 +27,7 @@ const stmtInsertProject = db.prepare(`
 const stmtAllTasks = db.prepare('SELECT * FROM tasks ORDER BY updated_at DESC');
 const stmtTasksByStatus = db.prepare('SELECT * FROM tasks WHERE status = ? ORDER BY updated_at DESC');
 const stmtGetTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
+const stmtRecentTaskByDescription = db.prepare('SELECT * FROM tasks WHERE description = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 1');
 const stmtTaskIdsByWorkspacePath = db.prepare('SELECT id FROM tasks WHERE workspace_path = ?');
 const stmtInsertTask = db.prepare(`
   INSERT INTO tasks (
@@ -60,6 +63,25 @@ const stmtInsertTaskMessage = db.prepare(`
   INSERT INTO task_messages (id, task_id, role, content, thinking, created_at)
   VALUES (@id, @task_id, @role, @content, @thinking, @created_at)
 `);
+const stmtAllActivityContexts = db.prepare('SELECT * FROM activity_contexts ORDER BY created_at DESC');
+const stmtGetActivityContext = db.prepare('SELECT * FROM activity_contexts WHERE id = ?');
+const stmtGetActivityContextBySourceEventId = db.prepare('SELECT * FROM activity_contexts WHERE source_event_id = ? ORDER BY created_at DESC LIMIT 1');
+const stmtInsertActivityContext = db.prepare(`
+  INSERT INTO activity_contexts (
+    id, source_event_id, trigger, spoken_input, captured_text, active_window_json, images_json,
+    decision_json, promoted_task_id, created_at, updated_at
+  )
+  VALUES (
+    @id, @source_event_id, @trigger, @spoken_input, @captured_text, @active_window_json, @images_json,
+    @decision_json, @promoted_task_id, @created_at, @updated_at
+  )
+`);
+const stmtUpdateActivityContextPromotedTask = db.prepare(`
+  UPDATE activity_contexts
+  SET promoted_task_id = ?, updated_at = ?
+  WHERE id = ?
+`);
+const stmtDeleteActivityContext = db.prepare('DELETE FROM activity_contexts WHERE id = ?');
 
 export function getAllProjects(): Project[] {
   return stmtAllProjects.all() as Project[];
@@ -71,10 +93,11 @@ export function getProject(path: string): Project | undefined {
 
 export function saveProject(project: { path: string; label?: string | null }): Project {
   const now = Date.now();
+  const existing = getProject(project.path);
   stmtInsertProject.run({
     path: project.path,
-    label: project.label ?? null,
-    created_at: getProject(project.path)?.created_at ?? now,
+    label: project.label ?? existing?.label ?? null,
+    created_at: existing?.created_at ?? now,
     updated_at: now,
   });
   return getProject(project.path) as Project;
@@ -96,6 +119,10 @@ export function getAllTasks(status?: TaskStatus): Task[] {
 
 export function getTask(id: string): Task | undefined {
   return stmtGetTask.get(id) as Task | undefined;
+}
+
+export function getRecentTaskByDescription(description: string, since: number): Task | undefined {
+  return stmtRecentTaskByDescription.get(description, since) as Task | undefined;
 }
 
 export function insertTask(task: {
@@ -264,4 +291,112 @@ export function appendTaskMessage(
     thinking: row.thinking ?? null,
   });
   return row;
+}
+
+interface ActivityContextRow {
+  id: string;
+  source_event_id: string | null;
+  trigger: string;
+  spoken_input: string | null;
+  captured_text: string | null;
+  active_window_json: string | null;
+  images_json: string | null;
+  decision_json: string | null;
+  promoted_task_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function parseJsonObject(value: string | null): Record<string, unknown> | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseActivityDecision(value: string | null): ActivityIntentDecision | null {
+  const parsed = parseJsonObject(value);
+  if (!parsed) return null;
+  const action = parsed.action === 'create_task' ? 'create_task' : 'save_context';
+  return {
+    action,
+    title: typeof parsed.title === 'string' ? parsed.title : '',
+    taskDescription: typeof parsed.taskDescription === 'string' ? parsed.taskDescription : '',
+    hasEnoughContext: parsed.hasEnoughContext === true,
+    reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+  };
+}
+
+function activityContextFromRow(row: ActivityContextRow): ActivityContext {
+  return {
+    id: row.id,
+    source_event_id: row.source_event_id,
+    trigger: row.trigger,
+    spoken_input: row.spoken_input,
+    captured_text: row.captured_text,
+    active_window: parseJsonObject(row.active_window_json),
+    images: parseJsonObject(row.images_json),
+    decision: parseActivityDecision(row.decision_json),
+    promoted_task_id: row.promoted_task_id,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function jsonString(value: unknown): string | null {
+  return value === undefined || value === null ? null : JSON.stringify(value);
+}
+
+export function getAllActivityContexts(): ActivityContext[] {
+  return (stmtAllActivityContexts.all() as ActivityContextRow[]).map(activityContextFromRow);
+}
+
+export function getActivityContext(id: string): ActivityContext | undefined {
+  const row = stmtGetActivityContext.get(id) as ActivityContextRow | undefined;
+  return row ? activityContextFromRow(row) : undefined;
+}
+
+export function getActivityContextBySourceEventId(sourceEventId: string): ActivityContext | undefined {
+  const row = stmtGetActivityContextBySourceEventId.get(sourceEventId) as ActivityContextRow | undefined;
+  return row ? activityContextFromRow(row) : undefined;
+}
+
+export function insertActivityContext(context: {
+  source_event_id?: string | null;
+  trigger: string;
+  spoken_input?: string | null;
+  captured_text?: string | null;
+  active_window?: unknown;
+  images?: unknown;
+  decision?: ActivityIntentDecision | null;
+  promoted_task_id?: string | null;
+}): ActivityContext {
+  const id = uuid();
+  const now = Date.now();
+  stmtInsertActivityContext.run({
+    id,
+    source_event_id: context.source_event_id ?? null,
+    trigger: context.trigger,
+    spoken_input: context.spoken_input ?? null,
+    captured_text: context.captured_text ?? null,
+    active_window_json: jsonString(context.active_window),
+    images_json: jsonString(context.images),
+    decision_json: jsonString(context.decision),
+    promoted_task_id: context.promoted_task_id ?? null,
+    created_at: now,
+    updated_at: now,
+  });
+  return getActivityContext(id) as ActivityContext;
+}
+
+export function updateActivityContextPromotedTask(id: string, taskId: string | null): ActivityContext | undefined {
+  stmtUpdateActivityContextPromotedTask.run(taskId, Date.now(), id);
+  return getActivityContext(id);
+}
+
+export function deleteActivityContext(id: string): boolean {
+  return stmtDeleteActivityContext.run(id).changes > 0;
 }

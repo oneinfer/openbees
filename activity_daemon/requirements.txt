@@ -1,0 +1,21 @@
+mss>=9.0.1
+pynput>=1.7.7
+pyperclip>=1.8.2
+SpeechRecognition>=3.10.0
+PyAudio>=0.2.14
+numpy>=1.23
+openwakeword>=0.6.0
+onnxruntime>=1.10.0,<2
+torch
+qwen-asr
+silero-vad
+psutil>=5.9.0
+
+# Windows accessibility
+pywinauto>=0.6.8; platform_system == "Windows"
+
+# macOS accessibility wrapper. Native osascript fallback is used when unavailable.
+atomacos>=3.2.1; platform_system == "Darwin"
+
+# Linux accessibility. xdotool/xclip are optional OS packages for X11 metadata/selection.
+pyatspi; platform_system == "Linux"

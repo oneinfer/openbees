@@ -1,5 +1,6 @@
 import type {
   AgentDefaults,
+  ActivityIntentDecision,
   AgentModelsResponse,
   CronJob,
   CronRun,
@@ -44,6 +45,20 @@ export type WorkerRequest =
       taskTitle: string;
       taskDescription?: string | null;
       responseText: string;
+    }
+  | {
+      id: string;
+      type: 'judge.activity_intent';
+      transcript: string;
+      timestamp?: string | null;
+      source?: string | null;
+      capturedText?: string | null;
+      activeWindow?: Record<string, unknown> | null;
+      images?: Record<string, unknown> | null;
+      model?: string | null;
+      reasoningEffort?: string | null;
+      systemMessage?: string;
+      prompt?: string;
     };
 
 export interface WorkerErrorPayload {
@@ -63,7 +78,8 @@ export type WorkerResult =
   | { executed: number }
   | { messages: TaskMessage[] }
   | { session: SessionMetadata | null }
-  | { done: boolean; reason: string };
+  | { done: boolean; reason: string }
+  | ActivityIntentDecision;
 
 export type WorkerEvent =
   | { id: string; type: 'result'; data: WorkerResult }

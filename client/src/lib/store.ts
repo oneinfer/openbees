@@ -7,11 +7,14 @@ interface AppState {
   streamingTaskIds: Set<string>;
   projectsLoaded: boolean;
   tasksLoaded: boolean;
+  currentProjectPath: string | null;
+  currentProjectLoaded: boolean;
   sidebarCollapsed: boolean;
 
   setProjects: (projects: Project[]) => void;
   upsertProject: (project: Project) => void;
   removeProject: (path: string, taskIds?: string[]) => void;
+  setCurrentProjectPath: (path: string | null) => void;
   setTasks: (tasks: Task[]) => void;
   upsertTask: (task: Task) => void;
   removeTask: (taskId: string) => void;
@@ -24,12 +27,21 @@ function tasksEqual(a: Task, b: Task): boolean {
   return a.updated_at === b.updated_at && a.last_viewed_at === b.last_viewed_at;
 }
 
+const CURRENT_PROJECT_STORAGE_KEY = 'bees:lastWorkspacePath';
+
+function normalizeStoredPath(path: string | null | undefined): string | null {
+  const trimmed = path?.trim();
+  return trimmed ? trimmed : null;
+}
+
 export const useStore = create<AppState>((set) => ({
   projects: [],
   tasks: [],
   streamingTaskIds: new Set<string>(),
   projectsLoaded: false,
   tasksLoaded: false,
+  currentProjectPath: normalizeStoredPath(localStorage.getItem(CURRENT_PROJECT_STORAGE_KEY)),
+  currentProjectLoaded: false,
   sidebarCollapsed: localStorage.getItem('sidebarCollapsed') === 'true',
 
   setProjects: (projects) => set({ projects, projectsLoaded: true }),
@@ -52,8 +64,22 @@ export const useStore = create<AppState>((set) => ({
       const tasks = state.tasks.filter((task) => task.workspace_path !== path && !taskIdSet.has(task.id));
       const streamingTaskIds = new Set(state.streamingTaskIds);
       for (const taskId of taskIds) streamingTaskIds.delete(taskId);
-      return { projects, tasks, streamingTaskIds };
+      const clearCurrent = state.currentProjectPath === path;
+      if (clearCurrent) localStorage.removeItem(CURRENT_PROJECT_STORAGE_KEY);
+      return {
+        projects,
+        tasks,
+        streamingTaskIds,
+        ...(clearCurrent ? { currentProjectPath: null } : {}),
+      };
     }),
+
+  setCurrentProjectPath: (path) => {
+    const normalized = normalizeStoredPath(path);
+    if (normalized) localStorage.setItem(CURRENT_PROJECT_STORAGE_KEY, normalized);
+    else localStorage.removeItem(CURRENT_PROJECT_STORAGE_KEY);
+    set({ currentProjectPath: normalized, currentProjectLoaded: true });
+  },
 
   setTasks: (tasks) => set({ tasks, tasksLoaded: true }),
 

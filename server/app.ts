@@ -9,7 +9,12 @@ import { skillsRouter } from './routes/skills.js';
 import { filesRouter } from './routes/files.js';
 import { systemRouter } from './routes/system.js';
 import { projectsRouter } from './routes/projects.js';
+import { asrRouter } from './routes/asr.js';
+import { activityRouter } from './routes/activity.js';
+import { activityContextsRouter } from './routes/activity-contexts.js';
 import { AgentRegistry } from './adapters/registry.js';
+import { qwenAsr } from './asr/qwen-worker.js';
+import { activityDaemon } from './activity-daemon.js';
 import { initSSE, addClient, sendEvent } from './events.js';
 import { getRunStatuses } from './live-chat.js';
 
@@ -20,8 +25,12 @@ app.use(cors());
 const agents = new AgentRegistry();
 
 app.get('/api/health', async (_req, res) => {
-  const runtimes = await agents.health();
-  res.json({ ok: true, runtimes, hermes: runtimes.hermes });
+  const [runtimes, asr, activity] = await Promise.all([
+    agents.health(),
+    qwenAsr.status(),
+    activityDaemon.status(),
+  ]);
+  res.json({ ok: true, runtimes, hermes: runtimes.hermes, asr, activity });
 });
 
 app.get('/api/events', (req, res) => {
@@ -40,6 +49,9 @@ app.use('/api/tasks', createTaskCronRouter(agents.hermes));
 app.use('/api/tasks', createTaskAgentSettingsRouter(agents));
 app.use('/api/tasks', chatRouter);
 app.use('/api/agent', createAgentRouter(agents));
+app.use('/api/asr', asrRouter);
+app.use('/api/activity', activityRouter);
+app.use('/api/activity-contexts', activityContextsRouter);
 app.use('/api/cron', createCronRouter(agents.hermes));
 app.use('/api/skills', skillsRouter);
 app.use('/api/system', systemRouter);
@@ -52,5 +64,5 @@ app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
   next(error);
 });
 
-export { agents };
+export { agents, qwenAsr, activityDaemon };
 export default app;

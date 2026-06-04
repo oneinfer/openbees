@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { useEffect, useMemo, useRef } from 'react';
+import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { Board } from './components/Board';
@@ -10,12 +11,21 @@ import { CronPage } from './components/CronPage';
 import { SkillsPage } from './components/SkillsPage';
 import { FileBrowserPage } from './components/FileBrowserPage';
 import { ProjectsPage } from './components/ProjectsPage';
+import { ActivityPage } from './components/ActivityPage';
+import { TaskCreatedToast } from './components/TaskCreatedToast';
+import { useActivityCapture } from './hooks/useActivityCapture';
 import { useTasks } from './hooks/useTasks';
 import { useTheme } from './hooks/useTheme';
+import { updateCurrentProject } from './lib/api';
+import { useStore } from './lib/store';
+import { normalizeProjectPath } from './lib/projects';
 
 function AppShell() {
   useTasks();
   useTheme();
+  useActivityCapture();
+  useRememberCurrentProject();
+  useStartupProjectRedirect();
 
   return (
     <div className="h-screen flex overflow-hidden bg-sidebar dark:bg-zinc-950">
@@ -25,6 +35,7 @@ function AppShell() {
         <Routes>
           <Route path="/" element={<Board />} />
           <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/activity" element={<ActivityPage />} />
           <Route path="/chats" element={<ChatPage />} />
           <Route path="/chats/:chatId" element={<ChatPage />} />
           <Route path="/tasks/new" element={<NewTaskPage />} />
@@ -35,8 +46,53 @@ function AppShell() {
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
+      <TaskCreatedToast />
     </div>
   );
+}
+
+function useStartupProjectRedirect() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const currentProjectPath = useStore((s) => s.currentProjectPath);
+  const currentProjectLoaded = useStore((s) => s.currentProjectLoaded);
+  const attemptedRedirect = useRef(false);
+
+  useEffect(() => {
+    if (attemptedRedirect.current || !currentProjectLoaded) return;
+    attemptedRedirect.current = true;
+    if (location.pathname === '/' && currentProjectPath) {
+      navigate(`/tasks/new?workspacePath=${encodeURIComponent(currentProjectPath)}`, { replace: true });
+    }
+  }, [currentProjectLoaded, currentProjectPath, location.pathname, navigate]);
+}
+
+function useRememberCurrentProject() {
+  const location = useLocation();
+  const tasks = useStore((s) => s.tasks);
+  const currentProjectPath = useStore((s) => s.currentProjectPath);
+  const setCurrentProjectPath = useStore((s) => s.setCurrentProjectPath);
+  const upsertProject = useStore((s) => s.upsertProject);
+
+  const routeProjectPath = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    const taskMatch = location.pathname.match(/^\/tasks\/([^/]+)$/);
+
+    if (location.pathname === '/projects') return normalizeProjectPath(params.get('path'));
+    if (taskMatch) return normalizeProjectPath(tasks.find((task) => task.id === taskMatch[1])?.workspace_path);
+    return null;
+  }, [location.pathname, location.search, tasks]);
+
+  useEffect(() => {
+    if (!routeProjectPath || routeProjectPath === currentProjectPath) return;
+
+    setCurrentProjectPath(routeProjectPath);
+    updateCurrentProject(routeProjectPath)
+      .then((result) => {
+        if (result.project) upsertProject(result.project);
+      })
+      .catch(console.error);
+  }, [currentProjectPath, routeProjectPath, setCurrentProjectPath, upsertProject]);
 }
 
 export default function App() {

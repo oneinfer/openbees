@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Download, ExternalLink, FileArchive, FileCode, FileImage, FileSpreadsheet, Loader2, MonitorUp, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import type { FileReadResponse, ToolProgressEvent } from '@shared/types';
+import type { FileReadResponse, LiveChatTimelineItem, ToolProgressEvent } from '@shared/types';
 import { ApiError, fileDownloadUrl, openSystemPath, readFile } from '../lib/api';
 import { toErrorMessage } from '../lib/format';
 
@@ -14,15 +14,21 @@ export interface ChatArtifact {
 const ABSOLUTE_WINDOWS_PATH = /[A-Za-z]:\\(?:[^\\/:*?"<>|\r\n`]+\\)*[^\\/:*?"<>|\s`]+/g;
 const ABSOLUTE_UNIX_PATH = /\/(?:[\w .@+-]+\/)+[\w .@+-]+/g;
 const RELATIVE_FILE_PATH = /(?:^|[\s([`'"])([A-Za-z0-9_.@+-]+(?:[\\/][A-Za-z0-9_.@+-]+)+\.[A-Za-z0-9][A-Za-z0-9_.-]{0,15})/g;
+const BARE_FILE_PATH = /(?:^|[\s([`'"])([A-Za-z0-9_.@+-]+\.[A-Za-z0-9][A-Za-z0-9_.-]{0,15})(?=$|[\s)\]'",;:])/g;
 
-const WRITE_TOOL_PATTERN = /(write|edit|patch|apply|create|save|rename|move|delete)/i;
+const WRITE_TOOL_PATTERN = /(write|edit|patch|apply|create|save|rename|move|delete|set-content|new-item|out-file|tee|touch)/i;
 const READ_TOOL_PATTERN = /(read|open|cat|view|grep|search)/i;
+const CREATE_TEXT_PATTERN = /(created|added|new file|new-item|touch|mkdir|writefile|set-content|cat\s*>|>\s*[^\s]+)/i;
+const DELETE_TEXT_PATTERN = /(deleted|removed|remove-item|\brm\b|del\s+)/i;
+const MODIFY_TEXT_PATTERN = /(changed|modified|updated|edited|patched|wrote|implemented|apply_patch|set-content|out-file|writefile)/i;
 const FILE_LIKE_EXTENSION_PATTERN = /\.[A-Za-z0-9][A-Za-z0-9_.-]{0,15}$/;
 const SPREADSHEET_EXTENSIONS = new Set(['.xlsx', '.xls', '.xlsm', '.csv', '.ods']);
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
 const ARCHIVE_EXTENSIONS = new Set(['.zip', '.7z', '.rar', '.tar', '.gz']);
 const DEFAULT_WORKSPACE_PATH = '~/.bees/workspace';
 const WINDOWS_POSIX_DRIVE_PATH = /^\/([A-Za-z])(?:\/|$)/;
+const RUNTIME_ARTIFACT_PATH_PATTERN = /(?:[\\/]AppData[\\/]Local[\\/]Temp[\\/]bees-runtime-prompts[\\/]|[\\/]AppData[\\/]Roaming[\\/]npm[\\/][^\\/]+\.CMD$|[\\/]node_modules[\\/]\.bin[\\/])/i;
+const RUNTIME_ARTIFACT_NAME_PATTERN = /^(prompt\.txt|task-context\.json|codex\.cmd|claude\.cmd)$/i;
 
 function normalizeWindowsPosixPath(path: string): string {
   const match = path.match(WINDOWS_POSIX_DRIVE_PATH);
@@ -53,6 +59,13 @@ function normalizePath(raw: string): string | null {
   return null;
 }
 
+function isRuntimeArtifactPath(path: string): boolean {
+  const normalized = path.replace(/\//g, '\\');
+  const name = fileName(path);
+  return RUNTIME_ARTIFACT_PATH_PATTERN.test(normalized)
+    || (RUNTIME_ARTIFACT_NAME_PATTERN.test(name) && /[\\/]AppData[\\/]/i.test(normalized));
+}
+
 function addPath(
   map: Map<string, ChatArtifact>,
   raw: string,
@@ -62,6 +75,7 @@ function addPath(
 ) {
   const path = normalizePath(raw);
   if (!path) return;
+  if (isRuntimeArtifactPath(path)) return;
   if (options?.requireFileLike && !looksLikeFilePath(path)) return;
 
   const existing = map.get(path);
@@ -91,6 +105,7 @@ function extractPathsFromText(
     addPath(map, match[0], operation, source, { requireFileLike: true });
   }
   for (const match of text.matchAll(RELATIVE_FILE_PATH)) addPath(map, match[1], operation, source);
+  for (const match of text.matchAll(BARE_FILE_PATH)) addPath(map, match[1], operation, source);
 }
 
 function extractPathsFromUnknown(
@@ -120,12 +135,23 @@ function extractPathsFromUnknown(
   }
 }
 
+function searchableText(value: unknown, depth = 0): string {
+  if (depth > 4 || value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map((item) => searchableText(item, depth + 1)).join('\n');
+  if (typeof value !== 'object') return '';
+  return Object.entries(value as Record<string, unknown>)
+    .map(([key, next]) => `${key}: ${searchableText(next, depth + 1)}`)
+    .join('\n');
+}
+
 function operationForTool(tool: ToolProgressEvent): ChatArtifact['operation'] {
-  const name = tool.tool.toLowerCase();
-  if (/delete|remove|rm/.test(name)) return 'deleted';
-  if (/create|new/.test(name)) return 'created';
-  if (WRITE_TOOL_PATTERN.test(name)) return 'modified';
-  if (READ_TOOL_PATTERN.test(name)) return 'read';
+  const text = `${tool.tool}\n${tool.label ?? ''}\n${searchableText(tool.details)}`.toLowerCase();
+  if (DELETE_TEXT_PATTERN.test(text)) return 'deleted';
+  if (CREATE_TEXT_PATTERN.test(text)) return 'created';
+  if (WRITE_TOOL_PATTERN.test(text) || MODIFY_TEXT_PATTERN.test(text)) return 'modified';
+  if (READ_TOOL_PATTERN.test(text)) return 'read';
   return 'referenced';
 }
 
@@ -137,28 +163,67 @@ function operationForMessageLine(line: string): ChatArtifact['operation'] {
   return 'referenced';
 }
 
-export function collectChatArtifacts(content: string, tools?: ToolProgressEvent[]): ChatArtifact[] {
+function addToolArtifacts(tool: ToolProgressEvent, artifacts: Map<string, ChatArtifact>) {
+  const operation = operationForTool(tool);
+  extractPathsFromText(tool.label, artifacts, operation, 'tool');
+  extractPathsFromUnknown(tool.details, artifacts, operation);
+}
+
+export function collectChatArtifacts(
+  content: string,
+  tools?: ToolProgressEvent[],
+  timeline?: LiveChatTimelineItem[],
+): ChatArtifact[] {
   const artifacts = new Map<string, ChatArtifact>();
 
   for (const tool of tools ?? []) {
     if (tool.status === 'running') continue;
-    const operation = operationForTool(tool);
-    extractPathsFromText(tool.label, artifacts, operation, 'tool');
-    extractPathsFromUnknown(tool.details, artifacts, operation);
+    addToolArtifacts(tool, artifacts);
+  }
+
+  for (const item of timeline ?? []) {
+    if (item.type === 'tool') {
+      if (item.tool.status !== 'running') addToolArtifacts(item.tool, artifacts);
+    } else if (item.type === 'text') {
+      for (const line of item.content.split('\n')) {
+        extractPathsFromText(line, artifacts, operationForMessageLine(line), 'message');
+      }
+    }
   }
 
   for (const line of content.split('\n')) {
     extractPathsFromText(line, artifacts, operationForMessageLine(line), 'message');
   }
 
-  return Array.from(artifacts.values()).sort((a, b) => {
+  return pruneArtifactAliases(Array.from(artifacts.values())).sort((a, b) => {
     const rank = { modified: 0, created: 1, read: 2, referenced: 3, deleted: 4 };
     return rank[a.operation] - rank[b.operation] || a.path.localeCompare(b.path);
   });
 }
 
+function comparablePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+}
+
+function pruneArtifactAliases(artifacts: ChatArtifact[]): ChatArtifact[] {
+  return artifacts.filter((artifact) => {
+    const normalized = comparablePath(artifact.path);
+    const hasMoreSpecificAlias = artifacts.some((candidate) => {
+      if (candidate.path === artifact.path) return false;
+      const candidatePath = comparablePath(candidate.path);
+      return candidatePath.endsWith(`/${normalized}`) && candidatePath.split('/').length > normalized.split('/').length;
+    });
+    return !hasMoreSpecificAlias;
+  });
+}
+
 function isAbsoluteOrHomePath(path: string): boolean {
   return path.startsWith('~') || path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path);
+}
+
+function isWindowsHost(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /win/i.test(navigator.userAgent) || /win/i.test(navigator.platform);
 }
 
 function resolveArtifactPath(path: string, workspacePath?: string | null): string {
@@ -172,6 +237,13 @@ function resolveArtifactPath(path: string, workspacePath?: string | null): strin
 function artifactPathCandidates(path: string, workspacePath?: string | null): string[] {
   const windowsPosixCandidate = normalizeWindowsPosixPath(path);
   const candidates = [resolveArtifactPath(path, workspacePath), path];
+  const rootPath = workspacePath?.trim() || DEFAULT_WORKSPACE_PATH;
+
+  if (path.startsWith('/') && !path.startsWith('//') && !WINDOWS_POSIX_DRIVE_PATH.test(path) && rootPath) {
+    const separator = rootPath.includes('\\') ? '\\' : '/';
+    const relativePath = path.replace(/^\/+/, '').replace(/\//g, separator);
+    candidates.push(`${rootPath.replace(/[\\/]+$/, '')}${separator}${relativePath}`);
+  }
 
   if (windowsPosixCandidate !== path) {
     candidates.push(windowsPosixCandidate);
@@ -179,6 +251,10 @@ function artifactPathCandidates(path: string, workspacePath?: string | null): st
 
   if (!workspacePath?.trim() && !isAbsoluteOrHomePath(path)) {
     candidates.push(resolveArtifactPath(path, DEFAULT_WORKSPACE_PATH));
+  }
+
+  if (isWindowsHost() && path.startsWith('/') && !WINDOWS_POSIX_DRIVE_PATH.test(path)) {
+    candidates.push(path.replace(/^\/+/, '').replace(/\//g, '\\'));
   }
 
   return [...new Set(candidates)];
@@ -233,6 +309,46 @@ function operationLabel(operation: ChatArtifact['operation']): string {
   if (operation === 'deleted') return 'Deleted';
   if (operation === 'read') return 'Read';
   return 'File';
+}
+
+function diffLinesForContent(content: string, operation: ChatArtifact['operation']): { prefix: string; className: string; text: string }[] {
+  const lines = content.split('\n');
+  if (operation === 'created') {
+    return lines.map((text) => ({
+      prefix: '+',
+      className: 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200',
+      text,
+    }));
+  }
+
+  return lines.map((text) => ({
+    prefix: ' ',
+    className: 'text-zinc-700 dark:text-zinc-200',
+    text,
+  }));
+}
+
+function ChangesPreview({ content, operation }: { content: string; operation: ChatArtifact['operation'] }) {
+  const lines = diffLinesForContent(content, operation);
+  return (
+    <div className="min-h-full p-4">
+      {operation !== 'created' && (
+        <div className="mb-3 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+          Showing the current file snapshot. A before-run snapshot is not available for this artifact yet.
+        </div>
+      )}
+      <pre className="overflow-auto rounded-lg border border-zinc-200 bg-white font-mono text-[12px] leading-relaxed dark:border-zinc-800 dark:bg-zinc-900">
+        {lines.map((line, index) => (
+          <div key={index} className={`flex min-w-max ${line.className}`}>
+            <span className="w-8 shrink-0 select-none border-r border-zinc-200 px-2 text-right text-zinc-400 dark:border-zinc-800 dark:text-zinc-600">
+              {line.prefix}
+            </span>
+            <span className="whitespace-pre-wrap break-words px-3">{line.text || ' '}</span>
+          </div>
+        ))}
+      </pre>
+    </div>
+  );
 }
 
 export function ChatArtifacts({
@@ -305,6 +421,7 @@ export function ArtifactViewer({
   const [error, setError] = useState<string | null>(null);
   const [binary, setBinary] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [viewMode, setViewMode] = useState<'preview' | 'changes'>('preview');
   const [openingLocal, setOpeningLocal] = useState(false);
   const [openLocalError, setOpenLocalError] = useState<string | null>(null);
   const actionPath = resolveDownloadPath(artifact.path, displayPath, workspacePath);
@@ -316,6 +433,7 @@ export function ArtifactViewer({
     setError(null);
     setBinary(false);
     setOpenLocalError(null);
+    setViewMode('preview');
     setDisplayPath(resolvedPath);
 
     async function loadArtifact() {
@@ -447,6 +565,25 @@ export function ArtifactViewer({
           </div>
         </div>
 
+        {content != null && (
+          <div className="flex items-center gap-1 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+            {(['preview', 'changes'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setViewMode(mode)}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                  viewMode === mode
+                    ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                    : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
+                }`}
+              >
+                {mode === 'preview' ? 'Preview' : 'Changes'}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="min-h-0 flex-1 overflow-auto bg-zinc-50 dark:bg-zinc-950">
           {loading && (
             <div className="flex h-full items-center justify-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
@@ -504,10 +641,13 @@ export function ArtifactViewer({
               </div>
             </div>
           )}
-          {!loading && content != null && (
+          {!loading && content != null && viewMode === 'preview' && (
             <pre className="min-h-full whitespace-pre-wrap break-words p-4 font-mono text-[13px] leading-relaxed text-zinc-800 dark:text-zinc-100">
               {content}
             </pre>
+          )}
+          {!loading && content != null && viewMode === 'changes' && (
+            <ChangesPreview content={content} operation={artifact.operation} />
           )}
         </div>
       </div>

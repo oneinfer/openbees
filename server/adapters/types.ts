@@ -1,4 +1,4 @@
-import type { AgentModelsResponse, AgentRunSettings, ContextUsage, SessionMetadata, TaskMessage } from '../../shared/types.js';
+import type { ActivityIntentDecision, AgentModelsResponse, AgentRunSettings, ContextUsage, SessionMetadata, TaskMessage } from '../../shared/types.js';
 
 export type { AgentRunSettings, ContextUsage };
 
@@ -52,4 +52,17 @@ export interface AgentAdapter {
     taskDescription: string | null,
     responseText: string,
   ): Promise<{ done: boolean; reason: string }>;
+
+  judgeActivityIntent(
+    transcript: string,
+    metadata?: {
+      timestamp?: string | null;
+      source?: string | null;
+      capturedText?: string | null;
+      activeWindow?: Record<string, unknown> | null;
+      images?: Record<string, unknown> | null;
+      model?: string | null;
+      reasoningEffort?: AgentRunSettings['reasoningEffort'];
+    },
+  ): Promise<ActivityIntentDecision>;
 }

@@ -155,6 +155,7 @@ export function AttachmentPreviewList({
   onChange,
 }: AttachmentPickerProps) {
   const attachmentsRef = useRef(attachments);
+  const [selectedAttachment, setSelectedAttachment] = useState<ComposerAttachment | null>(null);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -163,8 +164,9 @@ export function AttachmentPreviewList({
   const removeAttachment = useCallback((id: string) => {
     const target = attachments.find((attachment) => attachment.id === id);
     if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+    if (selectedAttachment?.id === id) setSelectedAttachment(null);
     onChange(attachments.filter((attachment) => attachment.id !== id));
-  }, [attachments, onChange]);
+  }, [attachments, onChange, selectedAttachment?.id]);
 
   useEffect(() => {
     return () => {
@@ -177,40 +179,104 @@ export function AttachmentPreviewList({
   if (attachments.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap gap-2 px-4 pt-3">
-      {attachments.map((attachment) => {
-        const isImage = attachment.file.type.startsWith('image/');
-        return (
-          <div
-            key={attachment.id}
-            className="flex h-10 max-w-full items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-2 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900/60 dark:text-zinc-200"
-            title={attachment.file.name}
-          >
-            {attachment.previewUrl ? (
-              <img
-                src={attachment.previewUrl}
-                alt=""
-                className="h-6 w-6 shrink-0 rounded object-cover"
-              />
-            ) : isImage ? (
-              <ImageIcon size={15} className="shrink-0 text-zinc-400" />
-            ) : (
-              <FileText size={15} className="shrink-0 text-zinc-400" />
-            )}
-            <span className="min-w-0 max-w-[14rem] truncate">{attachment.file.name}</span>
-            <button
-              type="button"
-              disabled={disabled}
-              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
-              aria-label={`Remove ${attachment.file.name}`}
-              title="Remove"
-              onClick={() => removeAttachment(attachment.id)}
+    <>
+      <div className="flex flex-wrap gap-2 px-4 pt-3">
+        {attachments.map((attachment) => {
+          const isImage = attachment.file.type.startsWith('image/');
+          const canPreview = Boolean(attachment.previewUrl);
+
+          return (
+            <div
+              key={attachment.id}
+              className={`flex h-10 max-w-full items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-2 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900/60 dark:text-zinc-200 ${
+                canPreview ? 'cursor-pointer transition-colors hover:border-zinc-300 hover:bg-zinc-100 dark:hover:border-zinc-600 dark:hover:bg-zinc-800' : ''
+              }`}
+              title={canPreview ? `Open ${attachment.file.name}` : attachment.file.name}
+              role={canPreview ? 'button' : undefined}
+              tabIndex={canPreview ? 0 : undefined}
+              onClick={() => {
+                if (canPreview) setSelectedAttachment(attachment);
+              }}
+              onKeyDown={(event) => {
+                if (!canPreview || (event.key !== 'Enter' && event.key !== ' ')) return;
+                event.preventDefault();
+                setSelectedAttachment(attachment);
+              }}
             >
-              <X size={13} />
-            </button>
-          </div>
-        );
-      })}
+              {attachment.previewUrl ? (
+                <img
+                  src={attachment.previewUrl}
+                  alt=""
+                  className="h-6 w-6 shrink-0 rounded object-cover"
+                />
+              ) : isImage ? (
+                <ImageIcon size={15} className="shrink-0 text-zinc-400" />
+              ) : (
+                <FileText size={15} className="shrink-0 text-zinc-400" />
+              )}
+              <span className="min-w-0 max-w-[14rem] truncate">{attachment.file.name}</span>
+              <button
+                type="button"
+                disabled={disabled}
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+                aria-label={`Remove ${attachment.file.name}`}
+                title="Remove"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  removeAttachment(attachment.id);
+                }}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {selectedAttachment?.previewUrl && createPortal(
+        <AttachmentImageViewer
+          attachment={selectedAttachment}
+          onClose={() => setSelectedAttachment(null)}
+        />,
+        document.body,
+      )}
+    </>
+  );
+}
+
+function AttachmentImageViewer({
+  attachment,
+  onClose,
+}: {
+  attachment: ComposerAttachment;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={attachment.file.name}
+      onClick={onClose}
+    >
+      <button
+        type="button"
+        className="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-lg bg-white/10 text-white transition-colors hover:bg-white/20"
+        onClick={onClose}
+        aria-label="Close image"
+        title="Close"
+      >
+        <X size={18} />
+      </button>
+      <img
+        src={attachment.previewUrl}
+        alt={attachment.file.name}
+        className="max-h-[88vh] max-w-[92vw] rounded-lg bg-white object-contain shadow-2xl dark:bg-zinc-950"
+        onClick={(event) => event.stopPropagation()}
+      />
+      <div className="absolute bottom-4 left-4 right-4 mx-auto max-w-xl truncate rounded-lg bg-zinc-950/70 px-3 py-2 text-center text-xs text-white">
+        {attachment.file.name}
+      </div>
     </div>
   );
 }

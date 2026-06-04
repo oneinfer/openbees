@@ -17,6 +17,7 @@ import { useStore } from '../lib/store';
 import { isChatTask } from '../lib/taskState';
 import { toErrorMessage } from '../lib/format';
 import { useAgentConfig } from '../hooks/useAgentConfig';
+import { primeTaskCreatedNotifications } from '../lib/taskNotification';
 
 const CHAT_COLUMN_CLASS = 'w-full max-w-[760px] mx-auto';
 const CHAT_WORKSPACE_STORAGE_KEY = 'bees:lastChatWorkspacePath';
@@ -70,6 +71,7 @@ function NewChatComposer() {
 
     setIsCreating(true);
     setError(null);
+    primeTaskCreatedNotifications();
     try {
       const files = attachments.map((attachment) => attachment.file);
       const { task } = await createTask(

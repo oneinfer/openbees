@@ -4,9 +4,10 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import type { AgentModelsResponse, AgentModelOption, AgentRuntime, SessionMetadata, TaskMessage } from '../../shared/types.js';
+import type { ActivityIntentDecision, AgentModelsResponse, AgentModelOption, AgentRuntime, ContextUsage, ReasoningEffort, SessionMetadata, TaskMessage } from '../../shared/types.js';
 import type { AgentAdapter, AgentRunOptions, StreamEvent } from './types.js';
 import { resolveBeesWorkspaceDir } from '../paths.js';
+import { ACTIVITY_INTENT_SYSTEM_PROMPT, buildActivityIntentRequest, normalizeActivityIntentDecision } from '../prompts/activity-intent.js';
 
 function createAsyncQueue<T>() {
   const values: T[] = [];
@@ -116,12 +117,80 @@ function stripAnsi(value: string): string {
   return value.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\].*?(?:\u0007|\x1B\\))/g, '');
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function appendTail(current: string, next: string, maxLength = 8000): string {
+  const combined = `${current}${next}`;
+  return combined.length > maxLength ? combined.slice(combined.length - maxLength) : combined;
+}
+
+function filterBenignRuntimeStderr(runtime: Exclude<AgentRuntime, 'hermes'>, text: string): string {
+  if (runtime !== 'codex') return text;
+
+  return text
+    .split(/\r?\n/)
+    .filter((line) => {
+      if (!line.trim()) return true;
+      if (/WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell/i.test(line)) return false;
+      if (/WARN codex_core_skills::loader: ignoring interface\.icon_(?:small|large): icon path must not contain '\.\.'/i.test(line)) return false;
+      return true;
+    })
+    .join('\n');
+}
+
+function envSeconds(name: string): number | null | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return value;
+}
+
+function commandTimeoutMs(runtime: Exclude<AgentRuntime, 'hermes'>): number | null {
+  const runtimeKey = runtime.toUpperCase();
+  const configured = envSeconds(`BEES_${runtimeKey}_TIMEOUT_SECONDS`)
+    ?? envSeconds('BEES_COMMAND_RUNTIME_TIMEOUT_SECONDS');
+  if (configured != null) return configured > 0 ? configured * 1000 : null;
+  if (runtime === 'claude_code') return 90_000;
+  return null;
+}
+
+function parseJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
+    throw new Error('Response did not contain a JSON object.');
+  }
+}
+
 function executableStem(executable: string): string {
   return basename(executable).toLowerCase().replace(/\.(cmd|bat|exe|ps1)$/i, '');
 }
 
 function hasFlag(args: string[], ...flags: string[]): boolean {
-  return args.some((arg) => flags.includes(arg));
+  return args.some((arg) => flags.some((flag) => arg === flag || (flag.startsWith('--') && arg.startsWith(`${flag}=`))));
+}
+
+function flagValue(args: string[], flag: string): string | null {
+  const inline = args.find((arg) => flag.startsWith('--') && arg.startsWith(`${flag}=`));
+  if (inline) return inline.slice(flag.length + 1);
+  const index = args.findIndex((arg) => arg === flag);
+  if (index < 0) return null;
+  return args[index + 1] && !args[index + 1].startsWith('-') ? args[index + 1] : null;
 }
 
 function pathEnvValue(): string {
@@ -202,6 +271,8 @@ function applyCodexDefaults(args: string[], options?: AgentRunOptions): string[]
     next.push('--sandbox', 'workspace-write');
   }
   if (!hasFlag(next, '--skip-git-repo-check')) next.push('--skip-git-repo-check');
+  if (!hasFlag(next, '--json')) next.push('--json');
+  if (!hasFlag(next, '--color')) next.push('--color', 'never');
   if (!next.includes('-')) next.push('-');
 
   return ['exec', ...next];
@@ -210,7 +281,11 @@ function applyCodexDefaults(args: string[], options?: AgentRunOptions): string[]
 function applyClaudeDefaults(args: string[], options?: AgentRunOptions): string[] {
   const next = args.slice();
   if (!hasFlag(next, '-p', '--print')) next.push('-p');
-  if (!hasFlag(next, '--output-format')) next.push('--output-format', 'text');
+  if (!hasFlag(next, '--output-format')) next.push('--output-format', 'stream-json');
+  if (flagValue(next, '--output-format') === 'stream-json' && !hasFlag(next, '--verbose')) {
+    next.push('--verbose');
+  }
+  if (!hasFlag(next, '--include-partial-messages')) next.push('--include-partial-messages');
   if (!hasFlag(next, '--dangerously-skip-permissions', '--permission-mode')) {
     next.push('--dangerously-skip-permissions');
   }
@@ -250,7 +325,7 @@ function prepareCommand(
   let args = tokens.slice(1);
 
   if (runtime === 'codex' && stem === 'codex') args = applyCodexDefaults(args, options);
-  if (runtime === 'claude_code' && stem === 'claude') args = applyClaudeDefaults(args, options);
+  if (runtime === 'claude_code') args = applyClaudeDefaults(args, options);
   if (runtime === 'opencode' && stem === 'opencode') args = applyOpenCodeDefaults(args, options);
 
   return {
@@ -258,6 +333,441 @@ function prepareCommand(
     args,
     label: [executable, ...args].join(' '),
   };
+}
+
+interface RuntimeStreamState {
+  runtime: Exclude<AgentRuntime, 'hermes'>;
+  parseStructured: boolean;
+  buffer: string;
+  stdoutTail: string;
+  sawStructured: boolean;
+  textSnapshots: Map<string, string>;
+  thinkingSnapshots: Map<string, string>;
+  runningTools: Set<string>;
+  pendingTextDrains: Promise<void>[];
+  context: ContextUsage | null;
+}
+
+function shouldParseStructuredOutput(runtime: Exclude<AgentRuntime, 'hermes'>, args: string[]): boolean {
+  if (runtime === 'codex') return hasFlag(args, '--json');
+  if (runtime === 'claude_code') {
+    return flagValue(args, '--output-format') === 'stream-json';
+  }
+  if (runtime === 'opencode') {
+    const index = args.findIndex((arg) => arg === '--format');
+    return index >= 0 && /json/i.test(args[index + 1] ?? '');
+  }
+  return false;
+}
+
+function textFromContentParts(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(textFromContentParts).join('');
+  if (!isRecord(value)) return '';
+
+  for (const key of ['text', 'delta', 'content', 'output', 'result']) {
+    const text = value[key];
+    if (typeof text === 'string') return text;
+  }
+
+  return '';
+}
+
+function codexItemKey(item: Record<string, unknown>, fallback: string): string {
+  return stringValue(item.id) ?? stringValue(item.call_id) ?? stringValue(item.name) ?? fallback;
+}
+
+function itemText(item: Record<string, unknown>): string {
+  return textFromContentParts(item.content ?? item.text ?? item.delta ?? item.output);
+}
+
+function itemThinking(item: Record<string, unknown>): string {
+  return textFromContentParts(item.summary ?? item.reasoning ?? item.content ?? item.text);
+}
+
+function emitSnapshotDelta(
+  state: RuntimeStreamState,
+  channel: 'text_delta' | 'thinking_delta',
+  key: string,
+  text: string,
+  events: StreamEvent[],
+): void {
+  if (!text) return;
+  const snapshots = channel === 'text_delta' ? state.textSnapshots : state.thinkingSnapshots;
+  const previous = snapshots.get(key) ?? '';
+  const delta = text.startsWith(previous) ? text.slice(previous.length) : text;
+  snapshots.set(key, text);
+  if (delta) events.push({ type: channel, content: delta });
+}
+
+function toolLabelFromItem(item: Record<string, unknown>): string | undefined {
+  const command = item.command ?? item.cmd ?? item.input;
+  if (typeof command === 'string') return command;
+  if (Array.isArray(command)) return command.map((part) => String(part)).join(' ');
+  if (isRecord(command)) {
+    const commandText = stringValue(command.command) ?? stringValue(command.cmd);
+    if (commandText) return commandText;
+  }
+  return stringValue(item.name) ?? stringValue(item.type) ?? undefined;
+}
+
+function toolNameFromItem(item: Record<string, unknown>): string {
+  return stringValue(item.name) ?? stringValue(item.tool_name) ?? stringValue(item.type) ?? 'tool';
+}
+
+function emitToolProgress(
+  state: RuntimeStreamState,
+  key: string,
+  event: StreamEvent,
+  events: StreamEvent[],
+): void {
+  if (event.status === 'running') {
+    if (state.runningTools.has(key)) return;
+    state.runningTools.add(key);
+  } else {
+    state.runningTools.delete(key);
+  }
+  events.push(event);
+}
+
+function contextFromUsage(usage: unknown): ContextUsage | null {
+  if (!isRecord(usage)) return null;
+  const used = numberValue(usage.used_tokens)
+    ?? numberValue(usage.total_tokens)
+    ?? numberValue(usage.input_tokens)
+    ?? numberValue(usage.inputTokens);
+  const window = numberValue(usage.window_tokens)
+    ?? numberValue(usage.context_window)
+    ?? numberValue(usage.contextWindowTokens);
+  if (used == null || window == null) return null;
+  return { used_tokens: used, window_tokens: window };
+}
+
+function codexPayload(record: Record<string, unknown>): Record<string, unknown> {
+  return isRecord(record.payload) ? record.payload : record;
+}
+
+function normalizeCodexEvent(record: Record<string, unknown>, state: RuntimeStreamState): StreamEvent[] {
+  const events: StreamEvent[] = [];
+  const payload = codexPayload(record);
+  const type = stringValue(payload.type) ?? stringValue(record.type) ?? '';
+  const item = isRecord(payload.item) ? payload.item : isRecord(payload.message) ? payload.message : null;
+  const itemType = item ? stringValue(item.type) ?? '' : '';
+
+  const directText = stringValue(payload.delta)
+    ?? stringValue(payload.text)
+    ?? stringValue(payload.content)
+    ?? stringValue(payload.message);
+  if (directText && /(agent_message|assistant|message|output_text|text_delta|text\.delta|response\.output_text)/i.test(type)) {
+    events.push({ type: 'text_delta', content: directText });
+    return events;
+  }
+
+  if (directText && /(reasoning|thought|thinking)/i.test(type)) {
+    events.push({ type: 'thinking_delta', content: directText });
+    return events;
+  }
+
+  if (item) {
+    const key = codexItemKey(item, type || 'codex-item');
+    const isAssistantMessage = itemType === 'message'
+      || itemType === 'agent_message'
+      || itemType === 'assistant_message'
+      || itemType === 'output_text';
+    const isReasoning = /reasoning|thought|thinking/i.test(itemType);
+    const isTool = /tool|function|shell|command|exec/i.test(itemType);
+
+    if (isAssistantMessage) {
+      emitSnapshotDelta(state, 'text_delta', key, itemText(item), events);
+    } else if (isReasoning) {
+      emitSnapshotDelta(state, 'thinking_delta', key, itemThinking(item), events);
+    }
+
+    if (isTool && /started|in_progress|pending/i.test(type)) {
+      emitToolProgress(state, key, {
+        type: 'tool_progress',
+        tool: toolNameFromItem(item),
+        status: 'running',
+        label: toolLabelFromItem(item),
+        details: item,
+      }, events);
+    } else if (isTool && /completed|done|finished/i.test(type)) {
+      emitToolProgress(state, key, {
+        type: 'tool_progress',
+        tool: toolNameFromItem(item),
+        status: 'completed',
+        label: toolLabelFromItem(item),
+        details: item,
+      }, events);
+    } else if (isTool && /error|failed/i.test(type)) {
+      emitToolProgress(state, key, {
+        type: 'tool_progress',
+        tool: toolNameFromItem(item),
+        status: 'error',
+        label: toolLabelFromItem(item),
+        details: item,
+      }, events);
+    }
+  }
+
+  if (/turn\.(completed|done)|response\.completed/i.test(type)) {
+    state.context = contextFromUsage(payload.usage) ?? state.context;
+  }
+
+  if (/task_complete/i.test(type)) {
+    const lastMessage = stringValue(payload.last_agent_message);
+    const alreadyEmitted = lastMessage
+      ? Array.from(state.textSnapshots.values()).includes(lastMessage)
+      : false;
+    if (lastMessage && !alreadyEmitted) {
+      emitSnapshotDelta(state, 'text_delta', 'codex-task-complete', lastMessage, events);
+    }
+  }
+
+  if (/error/i.test(type)) {
+    const error = stringValue(payload.message) ?? stringValue(payload.error);
+    if (error) events.push({ type: 'error', error, code: 'runtime_stream_error' });
+  }
+
+  return events;
+}
+
+function normalizeClaudeEvent(record: Record<string, unknown>, state: RuntimeStreamState): StreamEvent[] {
+  const events: StreamEvent[] = [];
+  const type = stringValue(record.type) ?? '';
+
+  if (type === 'assistant' && isRecord(record.message)) {
+    const content = Array.isArray(record.message.content) ? record.message.content : [];
+    let text = '';
+    let thinking = '';
+
+    for (const part of content) {
+      if (!isRecord(part)) continue;
+      const partType = stringValue(part.type) ?? '';
+      if (partType === 'text') text += stringValue(part.text) ?? '';
+      if (/thinking|reasoning/i.test(partType)) thinking += stringValue(part.thinking) ?? stringValue(part.text) ?? '';
+      if (partType === 'tool_use') {
+        const key = stringValue(part.id) ?? stringValue(part.name) ?? 'claude-tool';
+        emitToolProgress(state, key, {
+          type: 'tool_progress',
+          tool: stringValue(part.name) ?? 'tool',
+          status: 'running',
+          label: stringValue(part.name) ?? undefined,
+          details: part.input,
+        }, events);
+      }
+    }
+
+    emitSnapshotDelta(state, 'text_delta', 'claude-assistant', text, events);
+    emitSnapshotDelta(state, 'thinking_delta', 'claude-thinking', thinking, events);
+  }
+
+  if (type === 'user' && isRecord(record.message)) {
+    const content = Array.isArray(record.message.content) ? record.message.content : [];
+    for (const part of content) {
+      if (!isRecord(part) || stringValue(part.type) !== 'tool_result') continue;
+      const key = stringValue(part.tool_use_id) ?? 'claude-tool';
+      emitToolProgress(state, key, {
+        type: 'tool_progress',
+        tool: key,
+        status: part.is_error === true ? 'error' : 'completed',
+      }, events);
+    }
+  }
+
+  if (type === 'result') {
+    const result = stringValue(record.result);
+    if (result && state.textSnapshots.size === 0) {
+      emitSnapshotDelta(state, 'text_delta', 'claude-result', result, events);
+    }
+    if (record.is_error === true) {
+      events.push({
+        type: 'error',
+        error: result || stringValue(record.message) || 'Claude Code returned an error',
+        code: 'runtime_stream_error',
+      });
+    }
+  }
+
+  return events;
+}
+
+function normalizeGenericJsonEvent(record: Record<string, unknown>, state: RuntimeStreamState): StreamEvent[] {
+  const events: StreamEvent[] = [];
+  const type = stringValue(record.type) ?? stringValue(record.event) ?? '';
+  const text = stringValue(record.delta)
+    ?? stringValue(record.text)
+    ?? stringValue(record.content)
+    ?? (isRecord(record.message) ? textFromContentParts(record.message.content ?? record.message.text) : null);
+
+  if (text && /thinking|reasoning|thought/i.test(type)) {
+    events.push({ type: 'thinking_delta', content: text });
+  } else if (text && /message|assistant|text|delta|content|output/i.test(type)) {
+    events.push({ type: 'text_delta', content: text });
+  }
+
+  const tool = stringValue(record.tool) ?? stringValue(record.name) ?? stringValue(record.tool_name);
+  if (tool && /tool|command|exec|shell/i.test(type)) {
+    const status = /error|fail/i.test(type) ? 'error' : /complete|done|finish|end/i.test(type) ? 'completed' : 'running';
+    emitToolProgress(state, `${tool}:${stringValue(record.id) ?? ''}`, {
+      type: 'tool_progress',
+      tool,
+      status,
+      label: stringValue(record.label) ?? tool,
+      details: record.details ?? record.input ?? record.output,
+    }, events);
+  }
+
+  const error = stringValue(record.error) ?? stringValue(record.message);
+  if (error && /error|fail/i.test(type)) {
+    events.push({ type: 'error', error, code: 'runtime_stream_error' });
+  }
+
+  state.context = contextFromUsage(record.usage) ?? state.context;
+  return events;
+}
+
+function normalizeStructuredEvent(record: Record<string, unknown>, state: RuntimeStreamState): StreamEvent[] {
+  if (state.runtime === 'codex') return normalizeCodexEvent(record, state);
+  if (state.runtime === 'claude_code') return normalizeClaudeEvent(record, state);
+  return normalizeGenericJsonEvent(record, state);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function splitTextForDrip(text: string): string[] {
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const token of text.match(/\S+\s*|\s+/g) ?? [text]) {
+    current += token;
+    if (current.length >= 56 || /\n$/.test(current)) {
+      chunks.push(current);
+      current = '';
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function pushStreamEvent(
+  state: RuntimeStreamState,
+  queue: ReturnType<typeof createAsyncQueue<StreamEvent>>,
+  event: StreamEvent,
+): void {
+  if (
+    state.runtime !== 'codex' ||
+    event.type !== 'text_delta' ||
+    !event.content ||
+    event.content.length < 120
+  ) {
+    queue.push(event);
+    return;
+  }
+
+  const chunks = splitTextForDrip(event.content);
+  const drain = (async () => {
+    for (const chunk of chunks) {
+      queue.push({ ...event, content: chunk });
+      await delay(18);
+    }
+  })();
+  state.pendingTextDrains.push(drain);
+}
+
+async function waitForPendingText(state: RuntimeStreamState): Promise<void> {
+  while (state.pendingTextDrains.length > 0) {
+    const drains = state.pendingTextDrains.splice(0);
+    await Promise.allSettled(drains);
+  }
+}
+
+function handleStructuredLine(line: string, state: RuntimeStreamState, queue: ReturnType<typeof createAsyncQueue<StreamEvent>>): void {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    if (!state.sawStructured) queue.push({ type: 'text_delta', content: `${line}\n` });
+    return;
+  }
+
+  if (!isRecord(parsed)) return;
+  state.sawStructured = true;
+  for (const event of normalizeStructuredEvent(parsed, state)) pushStreamEvent(state, queue, event);
+}
+
+function handleStdoutChunk(
+  chunk: unknown,
+  state: RuntimeStreamState,
+  queue: ReturnType<typeof createAsyncQueue<StreamEvent>>,
+): void {
+  const text = stripAnsi(String(chunk));
+  if (!text) return;
+  state.stdoutTail = appendTail(state.stdoutTail, text);
+
+  if (!state.parseStructured) {
+    queue.push({ type: 'text_delta', content: text });
+    return;
+  }
+
+  state.buffer += text;
+  const lines = state.buffer.split(/\r?\n/);
+  state.buffer = lines.pop() ?? '';
+  for (const line of lines) handleStructuredLine(line, state, queue);
+}
+
+function flushStdout(state: RuntimeStreamState, queue: ReturnType<typeof createAsyncQueue<StreamEvent>>): void {
+  if (!state.buffer) return;
+  handleStructuredLine(state.buffer, state, queue);
+  state.buffer = '';
+}
+
+function processDetails(
+  prepared: { executable: string; args: string[]; label: string },
+  cwd: string,
+  startedAt: number,
+  files: { promptFile: string; contextFile: string },
+  stdoutTail: string,
+  stderrTail: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    command: prepared.label,
+    executable: prepared.executable,
+    args: prepared.args,
+    cwd,
+    promptFile: files.promptFile,
+    contextFile: files.contextFile,
+    elapsedSeconds: (Date.now() - startedAt) / 1000,
+    stdoutTail,
+    stderrTail,
+    ...extra,
+  };
+}
+
+function pushProcessUpdate(
+  queue: ReturnType<typeof createAsyncQueue<StreamEvent>>,
+  prepared: { executable: string; args: string[]; label: string },
+  cwd: string,
+  startedAt: number,
+  files: { promptFile: string; contextFile: string },
+  stdoutTail: string,
+  stderrTail: string,
+  extra: Record<string, unknown> = {},
+): void {
+  queue.push({
+    type: 'tool_progress',
+    tool: 'process',
+    status: 'running',
+    label: prepared.label,
+    details: processDetails(prepared, cwd, startedAt, files, stdoutTail, stderrTail, extra),
+  });
 }
 
 function mergeModelOptions(values: Array<{ id: string; label?: string; source?: AgentModelOption['source']; isCurrentDefault?: boolean }>): AgentModelOption[] {
@@ -358,9 +868,7 @@ async function discoverCodexModels(command: string): Promise<AgentModelsResponse
     ...(defaultModel ? [{ id: defaultModel, source: 'current' as const, isCurrentDefault: true }] : []),
     { id: 'gpt-5.5', label: 'GPT-5.5', source: 'catalog' as const },
     { id: 'gpt-5.4', label: 'GPT-5.4', source: 'catalog' as const },
-    { id: 'gpt-5.4-mini', label: 'GPT-5.4-Mini', source: 'catalog' as const },
-    { id: 'gpt-5.3-codex', label: 'GPT-5.3-Codex', source: 'catalog' as const },
-    { id: 'gpt-5.2', label: 'GPT-5.2', source: 'catalog' as const },
+    { id: 'gpt-5.4-mini', label: 'GPT-5.4-Mini', source: 'catalog' as const }
   ]);
 
   return {
@@ -527,20 +1035,43 @@ export class CommandRuntimeAdapter implements AgentAdapter {
       await mkdir(xdgConfigHome, { recursive: true });
       await mkdir(xdgDataHome, { recursive: true });
       const prepared = prepareCommand(this.runtime, this.command, options);
+      const streamState: RuntimeStreamState = {
+        runtime: this.runtime,
+        parseStructured: shouldParseStructuredOutput(this.runtime, prepared.args),
+        buffer: '',
+        stdoutTail: '',
+        sawStructured: false,
+        textSnapshots: new Map<string, string>(),
+        thinkingSnapshots: new Map<string, string>(),
+        runningTools: new Set<string>(),
+        pendingTextDrains: [],
+        context: null,
+      };
       let stderrBuffer = '';
+      let stderrTail = '';
+      let lastProcessUpdateAt = 0;
+      let timedOut = false;
+      let closed = false;
       let cleaned = false;
       const cleanup = async () => {
         if (cleaned) return;
         cleaned = true;
         await rm(files.dir, { recursive: true, force: true }).catch(() => undefined);
       };
+      const sendProcessUpdate = (extra: Record<string, unknown> = {}) => {
+        const { force: forceUpdate, ...details } = extra;
+        const now = Date.now();
+        if (now - lastProcessUpdateAt < 750 && !forceUpdate) return;
+        lastProcessUpdateAt = now;
+        pushProcessUpdate(queue, prepared, cwd, startedAt, files, streamState.stdoutTail, stderrTail, details);
+      };
+      const heartbeat = setInterval(() => {
+        sendProcessUpdate({ phase: 'running', force: true });
+      }, 2_000);
+      heartbeat.unref();
+      const timeoutMs = commandTimeoutMs(this.runtime);
 
-      queue.push({
-        type: 'tool_progress',
-        tool: 'process',
-        status: 'running',
-        label: prepared.label || this.command,
-      });
+      sendProcessUpdate({ phase: 'starting', timeoutSeconds: timeoutMs == null ? null : timeoutMs / 1000, force: true });
 
       const child = spawn(prepared.executable, prepared.args, {
         cwd,
@@ -564,50 +1095,78 @@ export class CommandRuntimeAdapter implements AgentAdapter {
       });
 
       child.stdout.on('data', (chunk) => {
-        const text = stripAnsi(String(chunk));
-        if (text) queue.push({ type: 'text_delta', content: text });
+        handleStdoutChunk(chunk, streamState, queue);
+        sendProcessUpdate({ phase: 'stdout' });
       });
 
       child.stderr.on('data', (chunk) => {
-        const text = stripAnsi(String(chunk));
+        const text = filterBenignRuntimeStderr(this.runtime, stripAnsi(String(chunk)));
+        if (!text.trim()) return;
         stderrBuffer += text;
+        stderrTail = appendTail(stderrTail, text);
+        sendProcessUpdate({ phase: 'stderr' });
       });
 
       child.on('error', (error) => {
+        clearInterval(heartbeat);
+        sendProcessUpdate({ phase: 'spawn_error', error: error.message, force: true });
         queue.push({ type: 'error', error: error.message, code: 'runtime_spawn_error' });
       });
+
+      const timeout = timeoutMs == null ? null : setTimeout(() => {
+        timedOut = true;
+        stderrTail = appendTail(stderrTail, `\nProcess timed out after ${(timeoutMs / 1000).toFixed(0)} seconds.\n`);
+        sendProcessUpdate({ phase: 'timeout', timedOut: true, force: true });
+        child.kill('SIGTERM');
+        setTimeout(() => {
+          if (!closed) child.kill('SIGKILL');
+        }, 5_000).unref();
+      }, timeoutMs);
+      timeout?.unref();
 
       child.stdin.write(promptText);
       child.stdin.end();
 
       child.on('close', (code) => {
-        const duration = (Date.now() - startedAt) / 1000;
-        if (code === 0) {
-          queue.push({
-            type: 'tool_progress',
-            tool: 'process',
-            status: 'completed',
-            duration,
-            label: prepared.label || this.command,
-          });
-          queue.push({ type: 'done', sessionId });
-        } else {
-          queue.push({
-            type: 'tool_progress',
-            tool: 'process',
-            status: 'error',
-            duration,
-            label: prepared.label || this.command,
-          });
-          queue.push({
-            type: 'error',
-            error: stderrBuffer.trim() || `${this.runtime} command exited with code ${code ?? 'unknown'}`,
-            code: 'runtime_exit_error',
-          });
-          queue.push({ type: 'done', sessionId });
-        }
-        queue.end();
-        void cleanup();
+        void (async () => {
+          closed = true;
+          clearInterval(heartbeat);
+          if (timeout) clearTimeout(timeout);
+          flushStdout(streamState, queue);
+          await waitForPendingText(streamState);
+          const duration = (Date.now() - startedAt) / 1000;
+          if (code === 0) {
+            queue.push({
+              type: 'tool_progress',
+              tool: 'process',
+              status: 'completed',
+              duration,
+              label: prepared.label || this.command,
+              details: processDetails(prepared, cwd, startedAt, files, streamState.stdoutTail, stderrTail, { exitCode: code }),
+            });
+            queue.push({ type: 'done', sessionId, context: streamState.context });
+          } else {
+            queue.push({
+              type: 'tool_progress',
+              tool: 'process',
+              status: 'error',
+              duration,
+              label: prepared.label || this.command,
+              details: processDetails(prepared, cwd, startedAt, files, streamState.stdoutTail, stderrTail, { exitCode: code, timedOut }),
+            });
+            const timeoutMessage = timedOut
+              ? `${this.runtime} command timed out after ${timeoutMs == null ? duration.toFixed(1) : (timeoutMs / 1000).toFixed(0)} seconds`
+              : null;
+            queue.push({
+              type: 'error',
+              error: timeoutMessage ?? (stderrBuffer.trim() || `${this.runtime} command exited with code ${code ?? 'unknown'}`),
+              code: timedOut ? 'runtime_timeout' : 'runtime_exit_error',
+            });
+            queue.push({ type: 'done', sessionId });
+          }
+          queue.end();
+          void cleanup();
+        })();
       });
     })().catch((error) => {
       queue.push({ type: 'error', error: error instanceof Error ? error.message : String(error), code: 'runtime_setup_error' });
@@ -654,5 +1213,54 @@ export class CommandRuntimeAdapter implements AgentAdapter {
       return { done: true, reason: `${this.runtime} command completed` };
     }
     return { done: false, reason: 'no response text produced' };
+  }
+
+  async judgeActivityIntent(
+    transcript: string,
+    metadata: {
+      timestamp?: string | null;
+      source?: string | null;
+      capturedText?: string | null;
+      activeWindow?: Record<string, unknown> | null;
+      images?: Record<string, unknown> | null;
+      model?: string | null;
+      reasoningEffort?: ReasoningEffort | null;
+    } = {},
+  ): Promise<ActivityIntentDecision> {
+    const normalized = transcript.trim();
+    const capturedText = metadata.capturedText?.trim() ?? '';
+    if (!normalized && !capturedText) {
+      return {
+        action: 'save_context' as const,
+        title: 'Saved voice context',
+        taskDescription: '',
+        hasEnoughContext: false,
+        reason: 'Spoken input and captured context are empty.',
+      };
+    }
+
+    const request = buildActivityIntentRequest({
+      transcript: normalized,
+      timestamp: metadata.timestamp,
+      source: metadata.source,
+      capturedText,
+      activeWindow: metadata.activeWindow,
+      images: metadata.images,
+    });
+    const result = await this.chat(`activity-intent-${randomUUID()}`, request, {
+      systemMessage: ACTIVITY_INTENT_SYSTEM_PROMPT,
+      task: {
+        id: `activity-intent-${randomUUID()}`,
+        title: 'Activity intent classification',
+        workspacePath: null,
+      },
+      settings: {
+        runtime: this.runtime,
+        model: metadata.model ?? null,
+        reasoningEffort: metadata.reasoningEffort ?? null,
+      },
+    });
+    const parsed = parseJsonObject(result.text) as Partial<ActivityIntentDecision>;
+    return normalizeActivityIntentDecision(parsed, normalized || capturedText);
   }
 }
