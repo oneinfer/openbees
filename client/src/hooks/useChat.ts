@@ -3,6 +3,7 @@ import type {
   ContextUsage,
   LiveChatMessage,
   LiveChatRun,
+  LiveChatTimelineItem,
   TaskMessage,
   ToolProgressEvent,
 } from '@shared/types';
@@ -15,6 +16,7 @@ export type { ContextUsage, ToolProgressEvent };
 type ChatMessage = Omit<TaskMessage, 'task_id'> & {
   task_id?: string;
   tools?: ToolProgressEvent[];
+  timeline?: LiveChatTimelineItem[];
 };
 
 type LiveEvent =
@@ -54,13 +56,15 @@ function preserveLiveAssistantDetails(msgs: ChatMessage[], run?: LiveChatRun | n
 
     const needsThinking = !!liveAssistant.thinking && !msgs[i].thinking;
     const needsTools = !!liveTools?.length && !msgs[i].tools?.length;
-    if (!needsThinking && !needsTools) return msgs;
+    const needsTimeline = !!liveAssistant.timeline?.length && !msgs[i].timeline?.length;
+    if (!needsThinking && !needsTools && !needsTimeline) return msgs;
 
     const copy = msgs.slice();
     copy[i] = {
       ...copy[i],
       ...(needsThinking ? { thinking: liveAssistant.thinking } : {}),
       ...(needsTools ? { tools: liveTools.map((tool) => ({ ...tool })) } : {}),
+      ...(needsTimeline ? { timeline: liveAssistant.timeline?.map(cloneTimelineItem) } : {}),
     };
     return copy;
   }
@@ -83,9 +87,15 @@ function ensureAssistant(run: LiveChatRun): LiveChatMessage {
     role: 'assistant',
     content: '',
     created_at: Date.now(),
+    timeline: [],
   };
   run.messages.push(msg);
   return msg;
+}
+
+function cloneTimelineItem(item: LiveChatTimelineItem): LiveChatTimelineItem {
+  if (item.type === 'tool') return { ...item, tool: { ...item.tool } };
+  return { ...item };
 }
 
 function mergeToolProgress(tools: ToolProgressEvent[], event: Extract<LiveEvent, { type: 'tool_progress' }>) {
@@ -97,7 +107,20 @@ function mergeToolProgress(tools: ToolProgressEvent[], event: Extract<LiveEvent,
     details: event.details,
   };
 
-  if (tool.status === 'running') return [...tools, tool];
+  if (tool.status === 'running') {
+    const next = [...tools];
+    for (let i = next.length - 1; i >= 0; i--) {
+      if (next[i].tool === tool.tool && next[i].status === 'running' && next[i].label === tool.label) {
+        next[i] = {
+          ...next[i],
+          ...tool,
+          label: tool.label ?? next[i].label,
+        };
+        return next;
+      }
+    }
+    return [...next, tool];
+  }
 
   const next = [...tools];
   for (let i = next.length - 1; i >= 0; i--) {
@@ -114,10 +137,54 @@ function mergeToolProgress(tools: ToolProgressEvent[], event: Extract<LiveEvent,
   return [...next, tool];
 }
 
+function appendTextTimeline(assistant: LiveChatMessage, type: 'text' | 'thinking', content: string, now: number) {
+  if (!assistant.timeline) assistant.timeline = [];
+  const last = assistant.timeline[assistant.timeline.length - 1];
+  if ((last?.type === 'text' || last?.type === 'thinking') && last.type === type && last.content.length < 1600) {
+    last.content += content;
+    return;
+  }
+  assistant.timeline.push({ id: crypto.randomUUID(), type, content, created_at: now });
+}
+
+function mergeToolTimeline(assistant: LiveChatMessage, event: Extract<LiveEvent, { type: 'tool_progress' }>, now: number) {
+  if (!assistant.timeline) assistant.timeline = [];
+  const tool: ToolProgressEvent = {
+    tool: event.tool ?? 'tool',
+    status: event.status ?? 'running',
+    duration: event.duration,
+    label: event.label,
+    details: event.details,
+  };
+
+  for (let i = assistant.timeline.length - 1; i >= 0; i--) {
+    const item = assistant.timeline[i];
+    if (item.type !== 'tool' || item.tool.tool !== tool.tool) continue;
+    if (tool.status === 'running' && item.tool.status === 'running' && item.tool.label === tool.label) {
+      item.tool = { ...item.tool, ...tool, label: tool.label ?? item.tool.label };
+      item.updated_at = now;
+      return;
+    }
+    if (tool.status !== 'running' && item.tool.status === 'running') {
+      item.tool = { ...item.tool, ...tool, label: tool.label ?? item.tool.label };
+      item.updated_at = now;
+      return;
+    }
+  }
+
+  assistant.timeline.push({ id: crypto.randomUUID(), type: 'tool', tool, created_at: now, updated_at: now });
+}
+
+function appendErrorTimeline(assistant: LiveChatMessage, error: string, now: number) {
+  if (!assistant.timeline) assistant.timeline = [];
+  assistant.timeline.push({ id: crypto.randomUUID(), type: 'error', error, created_at: now });
+}
+
 function snapshotMessages(messages: LiveChatMessage[]): ChatMessage[] {
   return messages.map((msg) => ({
     ...msg,
     tools: msg.tools ? msg.tools.map((t) => ({ ...t })) : undefined,
+    timeline: msg.timeline ? msg.timeline.map(cloneTimelineItem) : undefined,
   }));
 }
 
@@ -266,24 +333,31 @@ export function useChat() {
     if (!run) return;
 
     if (event.type === 'text_delta' && event.content) {
-      ensureAssistant(run).content += event.content;
-      run.updatedAt = Date.now();
+      const now = Date.now();
+      const assistant = ensureAssistant(run);
+      assistant.content += event.content;
+      appendTextTimeline(assistant, 'text', event.content, now);
+      run.updatedAt = now;
       schedulePublish();
       return;
     }
 
     if (event.type === 'thinking_delta' && event.content) {
+      const now = Date.now();
       const assistant = ensureAssistant(run);
       assistant.thinking = (assistant.thinking ?? '') + event.content;
-      run.updatedAt = Date.now();
+      appendTextTimeline(assistant, 'thinking', event.content, now);
+      run.updatedAt = now;
       schedulePublish();
       return;
     }
 
     if (event.type === 'tool_progress') {
+      const now = Date.now();
       const assistant = ensureAssistant(run);
       assistant.tools = mergeToolProgress(assistant.tools ?? [], event);
-      run.updatedAt = Date.now();
+      mergeToolTimeline(assistant, event, now);
+      run.updatedAt = now;
       schedulePublish();
       return;
     }
@@ -298,7 +372,9 @@ export function useChat() {
           ? `${assistant.content}\n[Error: ${error}]`
           : `[Error: ${error}]`;
       }
-      run.updatedAt = Date.now();
+      const now = Date.now();
+      appendErrorTimeline(assistant, error, now);
+      run.updatedAt = now;
       publishState();
       return;
     }

@@ -38,6 +38,10 @@ BEES_DEFAULT_RUNTIME=hermes
 BEES_CODEX_COMMAND=codex
 BEES_CLAUDE_CODE_COMMAND=claude
 BEES_OPENCODE_COMMAND=opencode
+
+# Optional command timeout overrides. Use 0 or omit to use runtime defaults.
+BEES_CLAUDE_CODE_TIMEOUT_SECONDS=90
+BEES_COMMAND_RUNTIME_TIMEOUT_SECONDS=
 ```
 
 These can also point to wrapper scripts if you want a fixed model or extra flags.
@@ -47,7 +51,7 @@ These can also point to wrapper scripts if you want a fixed model or extra flags
 If you use the plain CLI names above, the app now adds the safe non-interactive defaults for you:
 
 - `codex` runs as `codex exec ... -`
-- `claude` runs as `claude -p --output-format text ...`
+- `claude` runs as `claude -p --output-format stream-json --verbose ...`
 - `opencode` runs as `opencode run ...`
 
 The app also:

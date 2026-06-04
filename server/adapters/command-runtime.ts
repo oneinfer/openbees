@@ -129,6 +129,42 @@ function numberValue(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function appendTail(current: string, next: string, maxLength = 8000): string {
+  const combined = `${current}${next}`;
+  return combined.length > maxLength ? combined.slice(combined.length - maxLength) : combined;
+}
+
+function filterBenignRuntimeStderr(runtime: Exclude<AgentRuntime, 'hermes'>, text: string): string {
+  if (runtime !== 'codex') return text;
+
+  return text
+    .split(/\r?\n/)
+    .filter((line) => {
+      if (!line.trim()) return true;
+      if (/WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell/i.test(line)) return false;
+      if (/WARN codex_core_skills::loader: ignoring interface\.icon_(?:small|large): icon path must not contain '\.\.'/i.test(line)) return false;
+      return true;
+    })
+    .join('\n');
+}
+
+function envSeconds(name: string): number | null | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return value;
+}
+
+function commandTimeoutMs(runtime: Exclude<AgentRuntime, 'hermes'>): number | null {
+  const runtimeKey = runtime.toUpperCase();
+  const configured = envSeconds(`BEES_${runtimeKey}_TIMEOUT_SECONDS`)
+    ?? envSeconds('BEES_COMMAND_RUNTIME_TIMEOUT_SECONDS');
+  if (configured != null) return configured > 0 ? configured * 1000 : null;
+  if (runtime === 'claude_code') return 90_000;
+  return null;
+}
+
 function parseJsonObject(text: string): unknown {
   const trimmed = text.trim();
   try {
@@ -146,7 +182,15 @@ function executableStem(executable: string): string {
 }
 
 function hasFlag(args: string[], ...flags: string[]): boolean {
-  return args.some((arg) => flags.includes(arg));
+  return args.some((arg) => flags.some((flag) => arg === flag || (flag.startsWith('--') && arg.startsWith(`${flag}=`))));
+}
+
+function flagValue(args: string[], flag: string): string | null {
+  const inline = args.find((arg) => flag.startsWith('--') && arg.startsWith(`${flag}=`));
+  if (inline) return inline.slice(flag.length + 1);
+  const index = args.findIndex((arg) => arg === flag);
+  if (index < 0) return null;
+  return args[index + 1] && !args[index + 1].startsWith('-') ? args[index + 1] : null;
 }
 
 function pathEnvValue(): string {
@@ -238,6 +282,9 @@ function applyClaudeDefaults(args: string[], options?: AgentRunOptions): string[
   const next = args.slice();
   if (!hasFlag(next, '-p', '--print')) next.push('-p');
   if (!hasFlag(next, '--output-format')) next.push('--output-format', 'stream-json');
+  if (flagValue(next, '--output-format') === 'stream-json' && !hasFlag(next, '--verbose')) {
+    next.push('--verbose');
+  }
   if (!hasFlag(next, '--include-partial-messages')) next.push('--include-partial-messages');
   if (!hasFlag(next, '--dangerously-skip-permissions', '--permission-mode')) {
     next.push('--dangerously-skip-permissions');
@@ -278,7 +325,7 @@ function prepareCommand(
   let args = tokens.slice(1);
 
   if (runtime === 'codex' && stem === 'codex') args = applyCodexDefaults(args, options);
-  if (runtime === 'claude_code' && stem === 'claude') args = applyClaudeDefaults(args, options);
+  if (runtime === 'claude_code') args = applyClaudeDefaults(args, options);
   if (runtime === 'opencode' && stem === 'opencode') args = applyOpenCodeDefaults(args, options);
 
   return {
@@ -292,6 +339,7 @@ interface RuntimeStreamState {
   runtime: Exclude<AgentRuntime, 'hermes'>;
   parseStructured: boolean;
   buffer: string;
+  stdoutTail: string;
   sawStructured: boolean;
   textSnapshots: Map<string, string>;
   thinkingSnapshots: Map<string, string>;
@@ -303,8 +351,7 @@ interface RuntimeStreamState {
 function shouldParseStructuredOutput(runtime: Exclude<AgentRuntime, 'hermes'>, args: string[]): boolean {
   if (runtime === 'codex') return hasFlag(args, '--json');
   if (runtime === 'claude_code') {
-    const index = args.findIndex((arg) => arg === '--output-format');
-    return index >= 0 && args[index + 1] === 'stream-json';
+    return flagValue(args, '--output-format') === 'stream-json';
   }
   if (runtime === 'opencode') {
     const index = args.findIndex((arg) => arg === '--format');
@@ -442,6 +489,7 @@ function normalizeCodexEvent(record: Record<string, unknown>, state: RuntimeStre
         tool: toolNameFromItem(item),
         status: 'running',
         label: toolLabelFromItem(item),
+        details: item,
       }, events);
     } else if (isTool && /completed|done|finished/i.test(type)) {
       emitToolProgress(state, key, {
@@ -449,6 +497,7 @@ function normalizeCodexEvent(record: Record<string, unknown>, state: RuntimeStre
         tool: toolNameFromItem(item),
         status: 'completed',
         label: toolLabelFromItem(item),
+        details: item,
       }, events);
     } else if (isTool && /error|failed/i.test(type)) {
       emitToolProgress(state, key, {
@@ -456,6 +505,7 @@ function normalizeCodexEvent(record: Record<string, unknown>, state: RuntimeStre
         tool: toolNameFromItem(item),
         status: 'error',
         label: toolLabelFromItem(item),
+        details: item,
       }, events);
     }
   }
@@ -659,6 +709,7 @@ function handleStdoutChunk(
 ): void {
   const text = stripAnsi(String(chunk));
   if (!text) return;
+  state.stdoutTail = appendTail(state.stdoutTail, text);
 
   if (!state.parseStructured) {
     queue.push({ type: 'text_delta', content: text });
@@ -675,6 +726,48 @@ function flushStdout(state: RuntimeStreamState, queue: ReturnType<typeof createA
   if (!state.buffer) return;
   handleStructuredLine(state.buffer, state, queue);
   state.buffer = '';
+}
+
+function processDetails(
+  prepared: { executable: string; args: string[]; label: string },
+  cwd: string,
+  startedAt: number,
+  files: { promptFile: string; contextFile: string },
+  stdoutTail: string,
+  stderrTail: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    command: prepared.label,
+    executable: prepared.executable,
+    args: prepared.args,
+    cwd,
+    promptFile: files.promptFile,
+    contextFile: files.contextFile,
+    elapsedSeconds: (Date.now() - startedAt) / 1000,
+    stdoutTail,
+    stderrTail,
+    ...extra,
+  };
+}
+
+function pushProcessUpdate(
+  queue: ReturnType<typeof createAsyncQueue<StreamEvent>>,
+  prepared: { executable: string; args: string[]; label: string },
+  cwd: string,
+  startedAt: number,
+  files: { promptFile: string; contextFile: string },
+  stdoutTail: string,
+  stderrTail: string,
+  extra: Record<string, unknown> = {},
+): void {
+  queue.push({
+    type: 'tool_progress',
+    tool: 'process',
+    status: 'running',
+    label: prepared.label,
+    details: processDetails(prepared, cwd, startedAt, files, stdoutTail, stderrTail, extra),
+  });
 }
 
 function mergeModelOptions(values: Array<{ id: string; label?: string; source?: AgentModelOption['source']; isCurrentDefault?: boolean }>): AgentModelOption[] {
@@ -946,6 +1039,7 @@ export class CommandRuntimeAdapter implements AgentAdapter {
         runtime: this.runtime,
         parseStructured: shouldParseStructuredOutput(this.runtime, prepared.args),
         buffer: '',
+        stdoutTail: '',
         sawStructured: false,
         textSnapshots: new Map<string, string>(),
         thinkingSnapshots: new Map<string, string>(),
@@ -954,19 +1048,30 @@ export class CommandRuntimeAdapter implements AgentAdapter {
         context: null,
       };
       let stderrBuffer = '';
+      let stderrTail = '';
+      let lastProcessUpdateAt = 0;
+      let timedOut = false;
+      let closed = false;
       let cleaned = false;
       const cleanup = async () => {
         if (cleaned) return;
         cleaned = true;
         await rm(files.dir, { recursive: true, force: true }).catch(() => undefined);
       };
+      const sendProcessUpdate = (extra: Record<string, unknown> = {}) => {
+        const { force: forceUpdate, ...details } = extra;
+        const now = Date.now();
+        if (now - lastProcessUpdateAt < 750 && !forceUpdate) return;
+        lastProcessUpdateAt = now;
+        pushProcessUpdate(queue, prepared, cwd, startedAt, files, streamState.stdoutTail, stderrTail, details);
+      };
+      const heartbeat = setInterval(() => {
+        sendProcessUpdate({ phase: 'running', force: true });
+      }, 2_000);
+      heartbeat.unref();
+      const timeoutMs = commandTimeoutMs(this.runtime);
 
-      queue.push({
-        type: 'tool_progress',
-        tool: 'process',
-        status: 'running',
-        label: prepared.label || this.command,
-      });
+      sendProcessUpdate({ phase: 'starting', timeoutSeconds: timeoutMs == null ? null : timeoutMs / 1000, force: true });
 
       const child = spawn(prepared.executable, prepared.args, {
         cwd,
@@ -991,22 +1096,42 @@ export class CommandRuntimeAdapter implements AgentAdapter {
 
       child.stdout.on('data', (chunk) => {
         handleStdoutChunk(chunk, streamState, queue);
+        sendProcessUpdate({ phase: 'stdout' });
       });
 
       child.stderr.on('data', (chunk) => {
-        const text = stripAnsi(String(chunk));
+        const text = filterBenignRuntimeStderr(this.runtime, stripAnsi(String(chunk)));
+        if (!text.trim()) return;
         stderrBuffer += text;
+        stderrTail = appendTail(stderrTail, text);
+        sendProcessUpdate({ phase: 'stderr' });
       });
 
       child.on('error', (error) => {
+        clearInterval(heartbeat);
+        sendProcessUpdate({ phase: 'spawn_error', error: error.message, force: true });
         queue.push({ type: 'error', error: error.message, code: 'runtime_spawn_error' });
       });
+
+      const timeout = timeoutMs == null ? null : setTimeout(() => {
+        timedOut = true;
+        stderrTail = appendTail(stderrTail, `\nProcess timed out after ${(timeoutMs / 1000).toFixed(0)} seconds.\n`);
+        sendProcessUpdate({ phase: 'timeout', timedOut: true, force: true });
+        child.kill('SIGTERM');
+        setTimeout(() => {
+          if (!closed) child.kill('SIGKILL');
+        }, 5_000).unref();
+      }, timeoutMs);
+      timeout?.unref();
 
       child.stdin.write(promptText);
       child.stdin.end();
 
       child.on('close', (code) => {
         void (async () => {
+          closed = true;
+          clearInterval(heartbeat);
+          if (timeout) clearTimeout(timeout);
           flushStdout(streamState, queue);
           await waitForPendingText(streamState);
           const duration = (Date.now() - startedAt) / 1000;
@@ -1017,6 +1142,7 @@ export class CommandRuntimeAdapter implements AgentAdapter {
               status: 'completed',
               duration,
               label: prepared.label || this.command,
+              details: processDetails(prepared, cwd, startedAt, files, streamState.stdoutTail, stderrTail, { exitCode: code }),
             });
             queue.push({ type: 'done', sessionId, context: streamState.context });
           } else {
@@ -1026,11 +1152,15 @@ export class CommandRuntimeAdapter implements AgentAdapter {
               status: 'error',
               duration,
               label: prepared.label || this.command,
+              details: processDetails(prepared, cwd, startedAt, files, streamState.stdoutTail, stderrTail, { exitCode: code, timedOut }),
             });
+            const timeoutMessage = timedOut
+              ? `${this.runtime} command timed out after ${timeoutMs == null ? duration.toFixed(1) : (timeoutMs / 1000).toFixed(0)} seconds`
+              : null;
             queue.push({
               type: 'error',
-              error: stderrBuffer.trim() || `${this.runtime} command exited with code ${code ?? 'unknown'}`,
-              code: 'runtime_exit_error',
+              error: timeoutMessage ?? (stderrBuffer.trim() || `${this.runtime} command exited with code ${code ?? 'unknown'}`),
+              code: timedOut ? 'runtime_timeout' : 'runtime_exit_error',
             });
             queue.push({ type: 'done', sessionId });
           }

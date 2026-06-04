@@ -16,7 +16,7 @@ import { useAgentConfig } from '../hooks/useAgentConfig';
 import { handleChatKeyDown } from '../lib/keyboard';
 import { fileViewUrl } from '../lib/api';
 import type { AgentRunSettings } from '../lib/api';
-import type { ChatAttachment, TaskStatus } from '@shared/types';
+import type { ChatAttachment, LiveChatTimelineItem, TaskStatus } from '@shared/types';
 
 interface TaskChatProps {
   taskId: string;
@@ -219,33 +219,207 @@ function ImageAttachmentViewer({
   );
 }
 
-function ToolCallBlock({ tool }: { tool: ToolProgressEvent }) {
-  const Icon = getToolIcon(tool.tool);
+function stringDetail(details: unknown, key: string): string | null {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const value = (details as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : null;
+}
+
+function numberDetail(details: unknown, key: string): number | null {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const value = (details as Record<string, unknown>)[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function argsDetail(details: unknown): string[] {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return [];
+  const value = (details as Record<string, unknown>).args;
+  return Array.isArray(value) ? value.map((item) => String(item)) : [];
+}
+
+function detailText(details: unknown): string {
+  if (details == null) return '';
+  if (typeof details === 'string') return details;
+  try {
+    return JSON.stringify(details, null, 2);
+  } catch {
+    return String(details);
+  }
+}
+
+function ProcessDetails({ tool }: { tool: ToolProgressEvent }) {
+  const command = stringDetail(tool.details, 'command') ?? tool.label ?? '';
+  const cwd = stringDetail(tool.details, 'cwd');
+  const promptFile = stringDetail(tool.details, 'promptFile');
+  const contextFile = stringDetail(tool.details, 'contextFile');
+  const stdoutTail = stringDetail(tool.details, 'stdoutTail');
+  const stderrTail = stringDetail(tool.details, 'stderrTail');
+  const elapsed = numberDetail(tool.details, 'elapsedSeconds');
+  const exitCode = numberDetail(tool.details, 'exitCode');
+  const args = argsDetail(tool.details);
+
   return (
-    <div className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border ${
+    <div className="border-t border-zinc-200 px-4 py-3 text-xs dark:border-zinc-800">
+      <div className="grid gap-2">
+        {command && (
+          <div>
+            <div className="mb-1 font-medium text-zinc-500 dark:text-zinc-400">Command</div>
+            <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-100 p-2 font-mono text-zinc-700 dark:bg-zinc-950 dark:text-zinc-300">{command}</pre>
+          </div>
+        )}
+        <div className="grid gap-2 sm:grid-cols-2">
+          {cwd && (
+            <div className="min-w-0">
+              <div className="mb-1 font-medium text-zinc-500 dark:text-zinc-400">Working directory</div>
+              <div className="truncate rounded-md bg-zinc-100 p-2 font-mono text-zinc-700 dark:bg-zinc-950 dark:text-zinc-300" title={cwd}>{cwd}</div>
+            </div>
+          )}
+          <div className="min-w-0">
+            <div className="mb-1 font-medium text-zinc-500 dark:text-zinc-400">Status</div>
+            <div className="rounded-md bg-zinc-100 p-2 font-mono text-zinc-700 dark:bg-zinc-950 dark:text-zinc-300">
+              {tool.status}{elapsed != null ? ` - ${elapsed.toFixed(1)}s` : ''}{exitCode != null ? ` - exit ${exitCode}` : ''}
+            </div>
+          </div>
+        </div>
+        {(promptFile || contextFile) && (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {promptFile && <div className="truncate rounded-md bg-zinc-100 p-2 font-mono text-zinc-500 dark:bg-zinc-950 dark:text-zinc-400" title={promptFile}>Prompt: {promptFile}</div>}
+            {contextFile && <div className="truncate rounded-md bg-zinc-100 p-2 font-mono text-zinc-500 dark:bg-zinc-950 dark:text-zinc-400" title={contextFile}>Context: {contextFile}</div>}
+          </div>
+        )}
+        {args.length > 0 && (
+          <details className="rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
+            <summary className="cursor-pointer text-zinc-500 dark:text-zinc-400">Arguments</summary>
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-zinc-700 dark:text-zinc-300">{args.join('\n')}</pre>
+          </details>
+        )}
+        {stdoutTail && (
+          <div>
+            <div className="mb-1 font-medium text-zinc-500 dark:text-zinc-400">stdout</div>
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-950 p-2 font-mono text-zinc-100">{stdoutTail}</pre>
+          </div>
+        )}
+        {stderrTail && (
+          <div>
+            <div className="mb-1 font-medium text-zinc-500 dark:text-zinc-400">stderr</div>
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-950 p-2 font-mono text-red-200">{stderrTail}</pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function compactTimeline(items: LiveChatTimelineItem[]): LiveChatTimelineItem[] {
+  const sorted = [...items].sort((a, b) => a.created_at - b.created_at);
+  const compacted: LiveChatTimelineItem[] = [];
+
+  for (const item of sorted) {
+    const previous = compacted[compacted.length - 1];
+    if (
+      (item.type === 'text' || item.type === 'thinking') &&
+      previous &&
+      previous.type === item.type &&
+      previous.content.length < 2200
+    ) {
+      previous.content += item.content;
+      continue;
+    }
+    compacted.push(item.type === 'tool' ? { ...item, tool: { ...item.tool } } : { ...item });
+  }
+
+  return compacted;
+}
+
+function TimelineTextBlock({ item }: { item: Extract<LiveChatTimelineItem, { type: 'text' | 'thinking' }> }) {
+  const isThinking = item.type === 'thinking';
+  return (
+    <div className={isThinking ? 'rounded-lg border-l-2 border-zinc-200 py-1 pl-3 dark:border-zinc-700' : ''}>
+      {isThinking && (
+        <div className="mb-1 text-xs font-medium text-zinc-400 dark:text-zinc-500">Thinking</div>
+      )}
+      <div className={isThinking ? 'text-xs leading-relaxed text-zinc-400 dark:text-zinc-500' : 'text-sm leading-relaxed text-zinc-700 dark:text-zinc-300'}>
+        <MarkdownContent content={item.content} isStreaming />
+      </div>
+    </div>
+  );
+}
+
+function TimelineErrorBlock({ item }: { item: Extract<LiveChatTimelineItem, { type: 'error' }> }) {
+  return (
+    <div className="rounded-lg border border-red-200 px-3 py-2 text-sm text-red-600 dark:border-red-900 dark:text-red-400">
+      {item.error}
+    </div>
+  );
+}
+
+function ActivityTimeline({ items }: { items: LiveChatTimelineItem[] }) {
+  const compacted = compactTimeline(items);
+  if (compacted.length === 0) return null;
+
+  return (
+    <div className="mb-4 space-y-2.5">
+      {compacted.map((item) => {
+        if (item.type === 'tool') return <ToolCallBlock key={item.id} tool={item.tool} />;
+        if (item.type === 'error') return <TimelineErrorBlock key={item.id} item={item} />;
+        return <TimelineTextBlock key={item.id} item={item} />;
+      })}
+    </div>
+  );
+}
+
+function ToolCallBlock({ tool }: { tool: ToolProgressEvent }) {
+  const [expanded, setExpanded] = useState(tool.tool === 'process' && tool.status === 'error');
+  const Icon = getToolIcon(tool.tool);
+  const hasDetails = tool.details != null;
+  const canExpand = hasDetails || tool.tool === 'process';
+  const body = tool.tool === 'process' ? <ProcessDetails tool={tool} /> : (
+    <pre className="border-t border-zinc-200 px-4 py-3 whitespace-pre-wrap break-words font-mono text-xs text-zinc-600 dark:border-zinc-800 dark:text-zinc-300">
+      {detailText(tool.details)}
+    </pre>
+  );
+
+  return (
+    <div className={`overflow-hidden rounded-xl border ${
       tool.status === 'error'
         ? 'border-red-200 dark:border-red-900'
         : 'border-zinc-200 dark:border-zinc-700'
     }`}>
-      <Icon size={14} className="text-zinc-400 dark:text-zinc-500 shrink-0" />
-      <span className={`text-sm font-medium shrink-0 ${
-        tool.status === 'error'
-          ? 'text-red-500 dark:text-red-400'
-          : 'text-zinc-600 dark:text-zinc-300'
-      }`}>
-        {formatToolName(tool.tool)}
-      </span>
-      {tool.label && (
-        <span className="text-xs text-zinc-400 dark:text-zinc-500 font-mono truncate min-w-0">
-          {tool.label}
+      <button
+        type="button"
+        onClick={() => canExpand && setExpanded((value) => !value)}
+        disabled={!canExpand}
+        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left disabled:cursor-default"
+        title={canExpand ? 'Show process details' : undefined}
+      >
+        {canExpand ? (
+          expanded ? <ChevronDown size={14} className="shrink-0 text-zinc-400" /> : <ChevronRight size={14} className="shrink-0 text-zinc-400" />
+        ) : (
+          <Icon size={14} className="text-zinc-400 dark:text-zinc-500 shrink-0" />
+        )}
+        {canExpand && <Icon size={14} className="text-zinc-400 dark:text-zinc-500 shrink-0" />}
+        <span className={`text-sm font-medium shrink-0 ${
+          tool.status === 'error'
+            ? 'text-red-500 dark:text-red-400'
+            : 'text-zinc-600 dark:text-zinc-300'
+        }`}>
+          {formatToolName(tool.tool)}
         </span>
-      )}
-      {tool.status === 'running' && <Loader2 size={14} className="animate-spin text-zinc-400 shrink-0" />}
-      {tool.status === 'completed' && <Check size={14} className="text-zinc-400 shrink-0" />}
-      {tool.duration != null && (
-        <span className="text-xs text-zinc-300 dark:text-zinc-600 ml-auto shrink-0 tabular-nums">
-          {tool.duration.toFixed(1)}s
-        </span>
+        {tool.label && (
+          <span className="text-xs text-zinc-400 dark:text-zinc-500 font-mono truncate min-w-0">
+            {tool.label}
+          </span>
+        )}
+        {tool.status === 'running' && <Loader2 size={14} className="animate-spin text-zinc-400 shrink-0" />}
+        {tool.status === 'completed' && <Check size={14} className="text-zinc-400 shrink-0" />}
+        {tool.duration != null && (
+          <span className="text-xs text-zinc-300 dark:text-zinc-600 ml-auto shrink-0 tabular-nums">
+            {tool.duration.toFixed(1)}s
+          </span>
+        )}
+      </button>
+      {expanded && (
+        body
       )}
     </div>
   );
@@ -403,19 +577,23 @@ export function TaskChat({
               }
 
               const isLastAssistant = idx === messages.length - 1 && msg.role === 'assistant';
+              const timelineToShow = isLastAssistant ? msg.timeline ?? [] : [];
+              const showTimeline = timelineToShow.length > 0;
               const thinkingToShow = isLastAssistant && isStreaming ? thinkingContent : (msg.thinking || '');
               const isLiveThinking = isLastAssistant && isStreaming && !!thinkingContent;
-              const toolsToShow = isLastAssistant && isStreaming ? activeTools : (msg.tools ?? []);
-              const artifacts = collectChatArtifacts(msg.content, toolsToShow);
+              const toolsToShow = showTimeline ? [] : isLastAssistant && isStreaming ? activeTools : (msg.tools ?? []);
+              const artifacts = collectChatArtifacts(msg.content, toolsToShow, timelineToShow);
               const showSpinner = isLastAssistant && isStreaming && !msg.content && !thinkingContent && !activeTools.some(t => t.status === 'running');
 
               return (
                 <div key={msg.id} className="flex justify-start">
                   <div className="w-full px-1 sm:px-2">
-                    {thinkingToShow && (
+                    {showTimeline ? (
+                      <ActivityTimeline items={timelineToShow} />
+                    ) : thinkingToShow && (
                       <ThinkingBlock content={thinkingToShow} isLive={isLiveThinking} />
                     )}
-                    {toolsToShow.length > 0 && (
+                    {!showTimeline && toolsToShow.length > 0 && (
                       <div className="mb-4 space-y-2.5">
                         {toolsToShow.map((tool, i) => (
                           <ToolCallBlock key={`${tool.tool}-${i}`} tool={tool} />
@@ -423,7 +601,7 @@ export function TaskChat({
                       </div>
                     )}
                     <ChatArtifacts artifacts={artifacts} onOpenArtifact={setSelectedArtifact} />
-                    <div className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+                    {!showTimeline && <div className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
                       {msg.content ? (
                         <MarkdownContent content={msg.content} isStreaming={isLastAssistant && isStreaming} />
                       ) : (
@@ -442,7 +620,7 @@ export function TaskChat({
                           </span>
                         )
                       )}
-                    </div>
+                    </div>}
                   </div>
                 </div>
               );

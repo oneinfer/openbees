@@ -1,6 +1,6 @@
 import type { Response } from 'express';
 import { v4 as uuid } from 'uuid';
-import type { LiveChatRun, LiveChatMessage, TaskRunState, ToolProgressEvent } from '../shared/types.js';
+import type { LiveChatRun, LiveChatMessage, TaskRunState, ToolProgressEvent, LiveChatTimelineItem } from '../shared/types.js';
 import type { StreamEvent } from './adapters/types.js';
 
 export type LiveChatEvent = StreamEvent | { type: 'snapshot'; run: LiveChatRun };
@@ -18,9 +18,15 @@ function cloneRun(run: LiveChatRun): LiveChatRun {
     messages: run.messages.map((message) => ({
       ...message,
       tools: message.tools ? message.tools.map((tool) => ({ ...tool })) : undefined,
+      timeline: message.timeline ? message.timeline.map((item) => cloneTimelineItem(item)) : undefined,
     })),
     context: run.context ? { ...run.context } : null,
   };
+}
+
+function cloneTimelineItem(item: LiveChatTimelineItem): LiveChatTimelineItem {
+  if (item.type === 'tool') return { ...item, tool: { ...item.tool } };
+  return { ...item };
 }
 
 function runState(run: LiveChatRun): TaskRunState {
@@ -44,6 +50,7 @@ function assistantMessage(run: LiveChatRun): LiveChatMessage {
     role: 'assistant',
     content: '',
     created_at: Date.now(),
+    timeline: [],
   };
   run.messages.push(message);
   return message;
@@ -59,6 +66,12 @@ function mergeToolProgress(tools: ToolProgressEvent[], event: StreamEvent): void
   };
 
   if (tool.status === 'running') {
+    for (let i = tools.length - 1; i >= 0; i--) {
+      if (tools[i].tool === tool.tool && tools[i].status === 'running' && tools[i].label === tool.label) {
+        tools[i] = { ...tools[i], ...tool, label: tool.label ?? tools[i].label };
+        return;
+      }
+    }
     tools.push(tool);
     return;
   }
@@ -71,6 +84,49 @@ function mergeToolProgress(tools: ToolProgressEvent[], event: StreamEvent): void
   }
 
   tools.push(tool);
+}
+
+function appendTextTimeline(assistant: LiveChatMessage, type: 'text' | 'thinking', content: string, now: number): void {
+  if (!assistant.timeline) assistant.timeline = [];
+  const last = assistant.timeline[assistant.timeline.length - 1];
+  if ((last?.type === 'text' || last?.type === 'thinking') && last.type === type && last.content.length < 1600) {
+    last.content += content;
+    return;
+  }
+  assistant.timeline.push({ id: uuid(), type, content, created_at: now });
+}
+
+function mergeToolTimeline(assistant: LiveChatMessage, event: StreamEvent, now: number): void {
+  if (!assistant.timeline) assistant.timeline = [];
+  const tool: ToolProgressEvent = {
+    tool: event.tool ?? 'tool',
+    status: event.status ?? 'running',
+    duration: event.duration,
+    label: event.label,
+    details: event.details,
+  };
+
+  for (let i = assistant.timeline.length - 1; i >= 0; i--) {
+    const item = assistant.timeline[i];
+    if (item.type !== 'tool' || item.tool.tool !== tool.tool) continue;
+    if (tool.status === 'running' && item.tool.status === 'running' && item.tool.label === tool.label) {
+      item.tool = { ...item.tool, ...tool, label: tool.label ?? item.tool.label };
+      item.updated_at = now;
+      return;
+    }
+    if (tool.status !== 'running' && item.tool.status === 'running') {
+      item.tool = { ...item.tool, ...tool, label: tool.label ?? item.tool.label };
+      item.updated_at = now;
+      return;
+    }
+  }
+
+  assistant.timeline.push({ id: uuid(), type: 'tool', tool, created_at: now, updated_at: now });
+}
+
+function appendErrorTimeline(assistant: LiveChatMessage, error: string, now: number): void {
+  if (!assistant.timeline) assistant.timeline = [];
+  assistant.timeline.push({ id: uuid(), type: 'error', error, created_at: now });
 }
 
 function writeEvent(res: Response, event: LiveChatEvent): boolean {
@@ -133,6 +189,7 @@ export function startRun(taskId: string, sessionId: string, userContent: string)
         content: '',
         created_at: now,
         tools: [],
+        timeline: [],
       },
     ],
   };
@@ -146,14 +203,18 @@ export function applyEvent(taskId: string, event: StreamEvent): void {
   if (!run) return;
 
   const assistant = assistantMessage(run);
+  const now = Date.now();
 
   if (event.type === 'text_delta' && event.content) {
     assistant.content += event.content;
+    appendTextTimeline(assistant, 'text', event.content, now);
   } else if (event.type === 'thinking_delta' && event.content) {
     assistant.thinking = `${assistant.thinking ?? ''}${event.content}`;
+    appendTextTimeline(assistant, 'thinking', event.content, now);
   } else if (event.type === 'tool_progress') {
     if (!assistant.tools) assistant.tools = [];
     mergeToolProgress(assistant.tools, event);
+    mergeToolTimeline(assistant, event, now);
   } else if (event.type === 'done') {
     if (run.status !== 'error') run.status = 'done';
     if (event.sessionId) run.sessionId = event.sessionId;
@@ -169,9 +230,10 @@ export function applyEvent(taskId: string, event: StreamEvent): void {
         ? `${assistant.content}\n[Error: ${error}]`
         : `[Error: ${error}]`;
     }
+    appendErrorTimeline(assistant, error, now);
   }
 
-  run.updatedAt = Date.now();
+  run.updatedAt = now;
 }
 
 export function getRun(taskId: string): LiveChatRun | undefined {

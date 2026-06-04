@@ -64,6 +64,12 @@ export interface ToolProgressEvent {
   details?: unknown;
 }
 
+export type LiveChatTimelineItem =
+  | { id: string; type: 'text'; content: string; created_at: number }
+  | { id: string; type: 'thinking'; content: string; created_at: number }
+  | { id: string; type: 'tool'; tool: ToolProgressEvent; created_at: number; updated_at?: number }
+  | { id: string; type: 'error'; error: string; created_at: number };
+
 export type LiveChatRunStatus = 'streaming' | 'done' | 'error';
 
 export interface TaskRunState {
@@ -87,7 +93,7 @@ export type BoardEvent =
   | { type: 'task_runs_snapshot'; runs: TaskRunState[] }
   | { type: 'task_run_updated'; run: TaskRunState };
 
-export type LiveChatMessage = TaskMessage & { tools?: ToolProgressEvent[] };
+export type LiveChatMessage = TaskMessage & { tools?: ToolProgressEvent[]; timeline?: LiveChatTimelineItem[] };
 
 export interface LiveChatRun {
   taskId: string;
