@@ -287,11 +287,7 @@ function activityImageValues(event: ActivityDaemonEvent): unknown[] {
 }
 
 function shouldAttachActivityImages(event: ActivityDaemonEvent, decision: ActivityIntentDecision): boolean {
-  return hasCapturedImage(event) && (
-    decision.screenContextRequired
-    || event.trigger === 'voice_screenshot'
-    || event.trigger === 'voice_selection'
-  );
+  return hasCapturedImage(event) && decision.screenContextRequired;
 }
 
 function buildActivityTaskDescription(
