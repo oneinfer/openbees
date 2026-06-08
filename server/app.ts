@@ -13,7 +13,7 @@ import { asrRouter } from './routes/asr.js';
 import { activityRouter } from './routes/activity.js';
 import { activityContextsRouter } from './routes/activity-contexts.js';
 import { AgentRegistry } from './adapters/registry.js';
-import { qwenAsr } from './asr/qwen-worker.js';
+import { graniteAsr } from './asr/granite-worker.js';
 import { activityDaemon } from './activity-daemon.js';
 import { initSSE, addClient, sendEvent } from './events.js';
 import { getRunStatuses } from './live-chat.js';
@@ -27,7 +27,7 @@ const agents = new AgentRegistry();
 app.get('/api/health', async (_req, res) => {
   const [runtimes, asr, activity] = await Promise.all([
     agents.health(),
-    qwenAsr.status(),
+    graniteAsr.status(),
     activityDaemon.status(),
   ]);
   res.json({ ok: true, runtimes, hermes: runtimes.hermes, asr, activity });
@@ -64,5 +64,5 @@ app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
   next(error);
 });
 
-export { agents, qwenAsr, activityDaemon };
+export { agents, graniteAsr, activityDaemon };
 export default app;

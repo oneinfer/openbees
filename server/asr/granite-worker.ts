@@ -9,18 +9,19 @@ import { expandHomePrefix, resolveBeesHome } from '../paths.js';
 
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const TRANSCRIBE_TIMEOUT_MS = 10 * 60_000;
-const MODEL_LOAD_TIMEOUT_MS = Number(process.env.QWEN_ASR_LOAD_TIMEOUT_MS ?? 20 * 60_000);
+const MODEL_LOAD_TIMEOUT_MS = Number(process.env.GRANITE_ASR_LOAD_TIMEOUT_MS ?? process.env.QWEN_ASR_LOAD_TIMEOUT_MS ?? 20 * 60_000);
+const DEFAULT_ASR_MODEL = 'ibm-granite/granite-4.0-1b-speech';
 
-type QwenAsrRequest =
+type GraniteAsrRequest =
   | { id: string; type: 'health' }
   | { id: string; type: 'load' }
   | { id: string; type: 'transcribe'; audioPath: string; language?: string | null };
 
-type QwenAsrEvent =
+type GraniteAsrEvent =
   | { id: string; type: 'result'; data: unknown }
   | { id: string; type: 'error'; error: { message: string; code?: string } | string };
 
-type QwenAsrErrorPayload = Extract<QwenAsrEvent, { type: 'error' }>['error'];
+type GraniteAsrErrorPayload = Extract<GraniteAsrEvent, { type: 'error' }>['error'];
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -28,44 +29,48 @@ type PendingRequest = {
   timeout: ReturnType<typeof setTimeout> | null;
 };
 
-export class QwenAsrError extends Error {
+export class GraniteAsrError extends Error {
   code?: string;
 
   constructor(message: string, code?: string) {
     super(message);
-    this.name = 'QwenAsrError';
+    this.name = 'GraniteAsrError';
     this.code = code;
   }
 }
 
 function isEnabled(): boolean {
-  return process.env.QWEN_ASR_ENABLED?.trim().toLowerCase() === 'true';
+  return (process.env.GRANITE_ASR_ENABLED ?? process.env.QWEN_ASR_ENABLED)?.trim().toLowerCase() === 'true';
 }
 
 function asrModel(): string {
-  return process.env.QWEN_ASR_MODEL?.trim() || 'Qwen/Qwen3-ASR-0.6B';
+  return process.env.GRANITE_ASR_MODEL?.trim() || DEFAULT_ASR_MODEL;
 }
 
 function asrDevice(): string {
-  return process.env.QWEN_ASR_DEVICE?.trim() || 'cuda:0';
+  return process.env.GRANITE_ASR_DEVICE?.trim() || process.env.QWEN_ASR_DEVICE?.trim() || 'cpu';
 }
 
 function asrDtype(): string {
-  return process.env.QWEN_ASR_DTYPE?.trim() || 'bfloat16';
+  return process.env.GRANITE_ASR_DTYPE?.trim() || process.env.QWEN_ASR_DTYPE?.trim() || 'float32';
 }
 
-function resolveQwenPython(): string {
+function resolveAsrPython(): string {
+  if (process.env.GRANITE_ASR_PYTHON?.trim()) return expandHomePrefix(process.env.GRANITE_ASR_PYTHON.trim());
   if (process.env.QWEN_ASR_PYTHON?.trim()) return expandHomePrefix(process.env.QWEN_ASR_PYTHON.trim());
 
-  const localVenv = resolve(process.cwd(), '.venv-qwen-asr');
-  const homeVenv = join(resolveBeesHome(), 'qwen-asr-venv');
+  const localVenv = resolve(process.cwd(), '.venv-granite-asr');
+  const legacyLocalVenv = resolve(process.cwd(), '.venv-qwen-asr');
+  const homeVenv = join(resolveBeesHome(), 'granite-asr-venv');
   const candidates = process.platform === 'win32'
     ? [
         join(localVenv, 'Scripts', 'python.exe'),
+        join(legacyLocalVenv, 'Scripts', 'python.exe'),
         join(homeVenv, 'Scripts', 'python.exe'),
       ]
     : [
         join(localVenv, 'bin', 'python'),
+        join(legacyLocalVenv, 'bin', 'python'),
         join(homeVenv, 'bin', 'python'),
       ];
 
@@ -75,12 +80,12 @@ function resolveQwenPython(): string {
 function resolveWorkerScript(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    resolve(here, '../workers/qwen_asr_worker.py'),
-    resolve(here, '../../server/workers/qwen_asr_worker.py'),
-    resolve(process.cwd(), 'server/workers/qwen_asr_worker.py'),
+    resolve(here, '../workers/granite_asr_worker.py'),
+    resolve(here, '../../server/workers/granite_asr_worker.py'),
+    resolve(process.cwd(), 'server/workers/granite_asr_worker.py'),
   ];
   const found = candidates.find((candidate) => existsSync(candidate));
-  if (!found) throw new Error(`Qwen ASR worker script not found. Tried: ${candidates.join(', ')}`);
+  if (!found) throw new Error(`Granite ASR worker script not found. Tried: ${candidates.join(', ')}`);
   return found;
 }
 
@@ -92,18 +97,18 @@ function workerEnv(): NodeJS.ProcessEnv {
     TRANSFORMERS_VERBOSITY: 'error',
     TOKENIZERS_PARALLELISM: 'false',
     HF_HUB_VERBOSITY: 'error',
-    QWEN_ASR_MODEL: asrModel(),
-    QWEN_ASR_DEVICE: asrDevice(),
-    QWEN_ASR_DTYPE: asrDtype(),
+    GRANITE_ASR_MODEL: asrModel(),
+    GRANITE_ASR_DEVICE: asrDevice(),
+    GRANITE_ASR_DTYPE: asrDtype(),
   };
 }
 
-function formatWorkerError(error: QwenAsrErrorPayload): QwenAsrError {
-  if (typeof error === 'string') return new QwenAsrError(error);
-  return new QwenAsrError(error.message || 'Qwen ASR worker error', error.code);
+function formatWorkerError(error: GraniteAsrErrorPayload): GraniteAsrError {
+  if (typeof error === 'string') return new GraniteAsrError(error);
+  return new GraniteAsrError(error.message || 'Granite ASR worker error', error.code);
 }
 
-class QwenAsrWorkerClient {
+class GraniteAsrWorkerClient {
   private child: ChildProcessWithoutNullStreams | null = null;
   private readline: Interface | null = null;
   private pending = new Map<string, PendingRequest>();
@@ -117,7 +122,7 @@ class QwenAsrWorkerClient {
     if (!this.readyPromise) {
       this.readyPromise = this.request<{ ok: boolean }>('health', WORKER_READY_TIMEOUT_MS)
         .then((result) => {
-          if (!result.ok) throw new QwenAsrError('Qwen ASR worker healthcheck failed', 'health_failed');
+          if (!result.ok) throw new GraniteAsrError('Granite ASR worker healthcheck failed', 'health_failed');
           this.ready = true;
         })
         .catch((error) => {
@@ -144,7 +149,7 @@ class QwenAsrWorkerClient {
       this.readline = null;
     }
 
-    this.failPending(new QwenAsrError('Qwen ASR worker stopped', 'stopped'));
+    this.failPending(new GraniteAsrError('Granite ASR worker stopped', 'stopped'));
     if (!child || child.exitCode !== null) return;
 
     await new Promise<void>((resolveStop) => {
@@ -181,20 +186,20 @@ class QwenAsrWorkerClient {
   }
 
   async request<T>(type: 'health' | 'load', timeoutMs?: number): Promise<T>;
-  async request<T>(request: Omit<Extract<QwenAsrRequest, { type: 'transcribe' }>, 'id'>, timeoutMs?: number): Promise<T>;
+  async request<T>(request: Omit<Extract<GraniteAsrRequest, { type: 'transcribe' }>, 'id'>, timeoutMs?: number): Promise<T>;
   async request<T>(
-    input: 'health' | 'load' | Omit<Extract<QwenAsrRequest, { type: 'transcribe' }>, 'id'>,
+    input: 'health' | 'load' | Omit<Extract<GraniteAsrRequest, { type: 'transcribe' }>, 'id'>,
     timeoutMs = TRANSCRIBE_TIMEOUT_MS,
   ): Promise<T> {
     this.ensureStarted();
 
     const id = randomUUID();
-    const request: QwenAsrRequest = typeof input === 'string' ? { id, type: input } : { ...input, id };
+    const request: GraniteAsrRequest = typeof input === 'string' ? { id, type: input } : { ...input, id };
 
     return await new Promise<T>((resolveRequest, rejectRequest) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        rejectRequest(new QwenAsrError(`Qwen ASR request timed out after ${timeoutMs}ms`, 'timeout'));
+        rejectRequest(new GraniteAsrError(`Granite ASR request timed out after ${timeoutMs}ms`, 'timeout'));
       }, timeoutMs);
       timeout.unref();
 
@@ -217,7 +222,7 @@ class QwenAsrWorkerClient {
   private ensureStarted(): void {
     if (this.child && !this.child.killed && this.child.exitCode === null) return;
 
-    const python = resolveQwenPython();
+    const python = resolveAsrPython();
     const script = resolveWorkerScript();
     const cwd = resolveBeesHome();
     mkdirSync(cwd, { recursive: true });
@@ -234,16 +239,16 @@ class QwenAsrWorkerClient {
     child.stderr.on('data', (chunk) => process.stderr.write(String(chunk)));
     child.on('error', (error) => this.handleExit(error));
     child.on('exit', (code, signal) => {
-      this.handleExit(new QwenAsrError(`Qwen ASR worker exited (${signal ?? code ?? 'unknown'})`, 'worker_exit'));
+      this.handleExit(new GraniteAsrError(`Granite ASR worker exited (${signal ?? code ?? 'unknown'})`, 'worker_exit'));
     });
   }
 
   private handleLine(line: string): void {
-    let event: QwenAsrEvent;
+    let event: GraniteAsrEvent;
     try {
-      event = JSON.parse(line) as QwenAsrEvent;
+      event = JSON.parse(line) as GraniteAsrEvent;
     } catch {
-      process.stderr.write(`[qwen-asr-worker] non-json stdout: ${line}\n`);
+      process.stderr.write(`[granite-asr-worker] non-json stdout: ${line}\n`);
       return;
     }
 
@@ -265,12 +270,12 @@ class QwenAsrWorkerClient {
     this.child = null;
     this.ready = false;
     this.readyPromise = null;
-    this.failPending(new QwenAsrError(`Qwen ASR worker crashed: ${error.message}`, 'worker_crashed'));
+    this.failPending(new GraniteAsrError(`Granite ASR worker crashed: ${error.message}`, 'worker_crashed'));
   }
 
-  private write(request: QwenAsrRequest): void {
+  private write(request: GraniteAsrRequest): void {
     if (!this.child || !this.child.stdin.writable) {
-      throw new QwenAsrError('Qwen ASR worker is not running', 'not_running');
+      throw new GraniteAsrError('Granite ASR worker is not running', 'not_running');
     }
     this.child.stdin.write(`${JSON.stringify(request)}\n`);
   }
@@ -284,8 +289,8 @@ class QwenAsrWorkerClient {
   }
 }
 
-class QwenAsrService {
-  private client = new QwenAsrWorkerClient();
+class GraniteAsrService {
+  private client = new GraniteAsrWorkerClient();
   private queue: Promise<unknown> = Promise.resolve();
   private preloadPromise: Promise<void> | null = null;
 
@@ -338,7 +343,7 @@ class QwenAsrService {
   }
 
   async transcribe(audioPath: string, language?: string | null): Promise<AsrTranscriptionResponse> {
-    if (!isEnabled()) throw new QwenAsrError('Qwen ASR is disabled. Set QWEN_ASR_ENABLED=true to enable voice input.', 'disabled');
+    if (!isEnabled()) throw new GraniteAsrError('Granite ASR is disabled. Set GRANITE_ASR_ENABLED=true to enable voice input.', 'disabled');
 
     const startedAt = Date.now();
     const run = async () => {
@@ -361,4 +366,4 @@ class QwenAsrService {
   }
 }
 
-export const qwenAsr = new QwenAsrService();
+export const graniteAsr = new GraniteAsrService();

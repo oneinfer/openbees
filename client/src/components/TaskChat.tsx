@@ -541,6 +541,17 @@ export function TaskChat({
     });
   }, [input]);
 
+  const handleCapturedText = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setInput((current) => {
+      if (current.includes(trimmed)) return current;
+      return current.trim() ? `${current.trimEnd()}\n\n${trimmed}` : trimmed;
+    });
+    setCaptureError(null);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
+
   return (
     <div className="flex w-full flex-1 min-h-0">
       <div className={`flex min-w-0 flex-col transition-[width,flex-basis] duration-200 ${
@@ -658,6 +669,7 @@ export function TaskChat({
                 disabled={composerControlsDisabled}
                 inputText={input}
                 onCapture={(nextAttachments) => setAttachments((current) => [...current, ...nextAttachments])}
+                onTextCapture={handleCapturedText}
                 onStatus={setCaptureStatus}
                 onError={setCaptureError}
               />

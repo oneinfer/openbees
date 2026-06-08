@@ -1,13 +1,14 @@
 import { mkdirSync } from 'node:fs';
-import { unlink } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { copyFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { basename, extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { Router } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import multer from 'multer';
-import { qwenAsr, QwenAsrError } from '../asr/qwen-worker.js';
+import { graniteAsr, GraniteAsrError } from '../asr/granite-worker.js';
 import { agents } from '../app.js';
+import { activityDaemon } from '../activity-daemon.js';
 import { parseRunSettingsBody } from '../agent-settings.js';
 import { broadcast } from '../events.js';
 import { toErrorMessage } from '../errors.js';
@@ -20,15 +21,16 @@ import { CURRENT_PROJECT_SETTING_KEY } from './projects.js';
 import { TASK_MODES } from '../../shared/types.js';
 import type { ActivityIntentDecision, AsrTaskIntentResponse, AsrTranscriptionResponse, TaskMode } from '../../shared/types.js';
 import { notifyTaskCreated } from '../native-notifications.js';
+import { resolveBeesHome } from '../paths.js';
 
 const router = Router();
-const ASR_TMP_DIR = join(tmpdir(), 'bees-qwen-asr');
+const ASR_TMP_DIR = join(tmpdir(), 'bees-granite-asr');
 const DEFAULT_MAX_AUDIO_MB = 25;
 
 mkdirSync(ASR_TMP_DIR, { recursive: true });
 
 function maxAudioBytes(): number {
-  const configured = Number(process.env.QWEN_ASR_MAX_AUDIO_MB ?? DEFAULT_MAX_AUDIO_MB);
+  const configured = Number(process.env.GRANITE_ASR_MAX_AUDIO_MB ?? process.env.QWEN_ASR_MAX_AUDIO_MB ?? DEFAULT_MAX_AUDIO_MB);
   const megabytes = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_MAX_AUDIO_MB;
   return megabytes * 1024 * 1024;
 }
@@ -36,6 +38,46 @@ function maxAudioBytes(): number {
 function safeFileName(value: string): string {
   const name = basename(value).trim().replace(/[<>:"/\\|?*\u0000-\u001F]+/g, '_');
   return name || 'speech.webm';
+}
+
+function debugAsrUploadsEnabled(): boolean {
+  const value = (process.env.BEES_ASR_DEBUG_SAVE_AUDIO ?? process.env.GRANITE_ASR_DEBUG_SAVE_AUDIO ?? '')
+    .trim()
+    .toLowerCase();
+  return new Set(['true', '1', 'yes', 'on']).has(value);
+}
+
+function debugAsrUploadDir(): string {
+  const configured = process.env.BEES_ASR_DEBUG_AUDIO_DIR?.trim() || process.env.GRANITE_ASR_DEBUG_AUDIO_DIR?.trim();
+  return configured || join(resolveBeesHome(), 'audio-debug', 'click-record-button');
+}
+
+async function saveDebugUpload(file: Express.Multer.File, route: string): Promise<void> {
+  if (!debugAsrUploadsEnabled()) return;
+
+  const dir = debugAsrUploadDir();
+  mkdirSync(dir, { recursive: true });
+  const now = new Date();
+  const timestamp = now.toISOString().replace(/[:.]/g, '').replace('Z', 'Z');
+  const extension = extname(file.originalname || file.filename) || '.wav';
+  const safeRoute = route.replace(/[^a-zA-Z0-9_.-]+/g, '_');
+  const audioPath = join(dir, `${timestamp}_${randomUUID()}_${safeRoute}${extension}`);
+  await copyFile(file.path, audioPath);
+  const fileStat = await stat(audioPath);
+  await writeFile(
+    audioPath.replace(/\.[^./\\]+$/, '.json'),
+    JSON.stringify({
+      route,
+      savedAt: now.toISOString(),
+      audioPath,
+      uploadTempPath: file.path,
+      originalName: file.originalname,
+      mimeType: file.mimetype,
+      sizeBytes: fileStat.size,
+    }, null, 2),
+    'utf-8',
+  );
+  console.log(`[asr] saved debug upload ${route}: ${audioPath}`);
 }
 
 const upload = multer({
@@ -76,12 +118,24 @@ function parseTaskMode(value: unknown): TaskMode {
   return value as TaskMode;
 }
 
+function parseBooleanFlag(value: unknown, fieldName: string, defaultValue = false): boolean {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') throw new Error(`${fieldName} must be a boolean`);
+
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  throw new Error(`${fieldName} must be a boolean`);
+}
+
 function noCreateDecision(reason: string, transcript = ''): ActivityIntentDecision {
   return {
     action: 'save_context',
     title: 'Saved voice input',
     taskDescription: transcript,
     hasEnoughContext: false,
+    screenContextRequired: false,
     reason,
   };
 }
@@ -100,8 +154,19 @@ function insertForEditResponse(
   };
 }
 
+async function transcribeWithLoadedRuntime(filePath: string, language?: string | null): Promise<AsrTranscriptionResponse> {
+  try {
+    const transcript = await activityDaemon.transcribeFile(filePath, language);
+    console.log('[asr] transcribed via activity daemon loaded ASR model');
+    return transcript;
+  } catch (error) {
+    console.warn(`[asr] activity daemon ASR unavailable; falling back to Granite worker: ${error instanceof Error ? error.message : String(error)}`);
+    return await graniteAsr.transcribe(filePath, language);
+  }
+}
+
 router.get('/status', async (_req, res) => {
-  res.json(await qwenAsr.status());
+  res.json(await graniteAsr.status());
 });
 
 router.post('/transcribe', audioUploadMiddleware, async (req, res) => {
@@ -109,11 +174,14 @@ router.post('/transcribe', audioUploadMiddleware, async (req, res) => {
   if (!file) return res.status(400).json({ error: 'audio is required' });
 
   try {
+    await saveDebugUpload(file, 'transcribe').catch((error) => {
+      console.warn(`[asr] failed to save debug upload: ${error instanceof Error ? error.message : String(error)}`);
+    });
     const language = typeof req.body?.language === 'string' ? req.body.language.trim() || null : null;
-    const result = await qwenAsr.transcribe(file.path, language);
+    const result = await transcribeWithLoadedRuntime(file.path, language);
     res.json(result);
   } catch (error) {
-    const status = error instanceof QwenAsrError && error.code === 'disabled' ? 503 : 500;
+    const status = error instanceof GraniteAsrError && error.code === 'disabled' ? 503 : 500;
     res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
   } finally {
     await unlink(file.path).catch(() => undefined);
@@ -125,8 +193,11 @@ router.post('/transcribe-task-intent', audioUploadMiddleware, async (req, res) =
   if (!file) return res.status(400).json({ error: 'audio is required' });
 
   try {
+    await saveDebugUpload(file, 'transcribe_task_intent').catch((error) => {
+      console.warn(`[asr] failed to save debug upload: ${error instanceof Error ? error.message : String(error)}`);
+    });
     const language = typeof req.body?.language === 'string' ? req.body.language.trim() || null : null;
-    const transcript = await qwenAsr.transcribe(file.path, language);
+    const transcript = await transcribeWithLoadedRuntime(file.path, language);
     const transcriptText = transcript.text.trim();
 
     if (!transcriptText) {
@@ -140,11 +211,15 @@ router.post('/transcribe-task-intent', audioUploadMiddleware, async (req, res) =
     let requestedRuntime: ReturnType<typeof parseRuntimeValue>;
     let workspacePath: string | null;
     let taskMode: TaskMode;
+    let shouldStart = true;
     try {
       runSettings = parseRunSettingsBody(req.body);
       requestedRuntime = parseRuntimeValue(req.body.runtime);
       workspacePath = parseWorkspacePath(req.body) ?? null;
       taskMode = parseTaskMode(req.body.taskMode ?? req.body.task_mode);
+      if (req.body.start !== undefined) {
+        shouldStart = parseBooleanFlag(req.body.start, 'start', true);
+      }
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid voice task settings' });
     }
@@ -189,17 +264,19 @@ router.post('/transcribe-task-intent', audioUploadMiddleware, async (req, res) =
       reasoningEffort,
     });
 
-    try {
-      task = startTaskImmediately(task);
-    } catch (error) {
-      const reverted = updateTask(task.id, { status: 'pending' }) ?? task;
-      notifyTaskCreated(reverted);
-      broadcast({ type: 'task_created', task: reverted });
-      const message = toErrorMessage(error, 'Task was created but could not be activated');
-      return res.status(409).json({
-        ...insertForEditResponse(transcript, message, decision, message),
-        task: reverted,
-      });
+    if (shouldStart) {
+      try {
+        task = startTaskImmediately(task);
+      } catch (error) {
+        const reverted = updateTask(task.id, { status: 'pending' }) ?? task;
+        notifyTaskCreated(reverted);
+        broadcast({ type: 'task_created', task: reverted });
+        const message = toErrorMessage(error, 'Task was created but could not be activated');
+        return res.status(409).json({
+          ...insertForEditResponse(transcript, message, decision, message),
+          task: reverted,
+        });
+      }
     }
 
     if (workspacePath) {
@@ -213,11 +290,11 @@ router.post('/transcribe-task-intent', audioUploadMiddleware, async (req, res) =
     res.status(201).json({
       transcript,
       decision,
-      actionTaken: 'task_created_started',
+      actionTaken: shouldStart ? 'task_created_started' : 'task_created',
       task,
     } satisfies AsrTaskIntentResponse);
   } catch (error) {
-    const status = error instanceof QwenAsrError && error.code === 'disabled' ? 503 : 500;
+    const status = error instanceof GraniteAsrError && error.code === 'disabled' ? 503 : 500;
     res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
   } finally {
     await unlink(file.path).catch(() => undefined);

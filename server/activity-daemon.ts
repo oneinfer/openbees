@@ -14,6 +14,7 @@ import { getActivityContextBySourceEventId, getAppSetting, insertActivityContext
 import { CURRENT_PROJECT_SETTING_KEY } from './routes/projects.js';
 import { notifyTaskCreated } from './native-notifications.js';
 import type { ActivityContext, ActivityIntentDecision } from '../shared/types.js';
+import type { AsrTranscriptionResponse } from '../shared/types.js';
 
 const HEALTH_TIMEOUT_MS = 1200;
 const STARTUP_POLL_MS = 250;
@@ -88,15 +89,18 @@ function activityEnabled(): boolean {
 function activityPython(): string {
   if (process.env.BEES_ACTIVITY_PYTHON?.trim()) return expandHomePrefix(process.env.BEES_ACTIVITY_PYTHON.trim());
 
-  const localVenv = resolve(process.cwd(), '.venv-qwen-asr');
-  const homeVenv = join(resolveBeesHome(), 'qwen-asr-venv');
+  const localVenv = resolve(process.cwd(), '.venv-granite-asr');
+  const legacyLocalVenv = resolve(process.cwd(), '.venv-qwen-asr');
+  const homeVenv = join(resolveBeesHome(), 'granite-asr-venv');
   const candidates = process.platform === 'win32'
     ? [
         join(localVenv, 'Scripts', 'python.exe'),
+        join(legacyLocalVenv, 'Scripts', 'python.exe'),
         join(homeVenv, 'Scripts', 'python.exe'),
       ]
     : [
         join(localVenv, 'bin', 'python'),
+        join(legacyLocalVenv, 'bin', 'python'),
         join(homeVenv, 'bin', 'python'),
       ];
 
@@ -156,6 +160,23 @@ function selectedText(event: ActivityDaemonEvent): string {
   return event.text?.selection_text?.trim() || '';
 }
 
+function compactSingleLine(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+function activeWindowContext(event: ActivityDaemonEvent): string {
+  const window = event.active_window;
+  if (!window) return '';
+
+  const pieces = [
+    compactSingleLine(window.app_name),
+    compactSingleLine(window.title),
+    compactSingleLine(window.process_name),
+  ].filter(Boolean);
+
+  return [...new Set(pieces)].join(' - ');
+}
+
 function hasCapturedContext(event: ActivityDaemonEvent): boolean {
   return Boolean(
     selectedText(event)
@@ -170,31 +191,90 @@ function hasCapturedImage(event: ActivityDaemonEvent): boolean {
   return Boolean(event.images?.screenshot || event.images?.selection_crop || event.images?.cursor_crop);
 }
 
-function transcriptRequestsImageBackedWork(transcript: string): boolean {
+function transcriptLooksActionable(transcript: string): boolean {
   const normalized = transcript.trim().toLowerCase();
   if (!normalized) return false;
-
-  const hasAction = /\b(create|build|make|design|clone|copy|recreate|replicate|implement|generate|modify|update|turn|convert)\b/.test(normalized);
-  const hasDeliverable = /\b(website|site|webpage|page|app|ui|screen|layout|component|design|interface|landing|dashboard|form|flow)\b/.test(normalized);
-  const referencesCapture = /\b(like this|based on this|from this|using this|this screenshot|this image|the screenshot|the image|what'?s shown|visible)\b/.test(normalized);
-
-  return hasAction && (hasDeliverable || referencesCapture);
+  if (transcriptLooksIncomplete(normalized)) return false;
+  return /\b(can you|could you|please|write|create|build|make|implement|generate|draft|summarize|explain|fix|update|open|find|search|read|analyze|help)\b/.test(normalized);
 }
 
-function imageBackedTaskDecision(
+function transcriptLooksIncomplete(transcript: string): boolean {
+  const normalized = transcript.replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!normalized) return true;
+  const exactIncomplete = new Set([
+    'can',
+    'can you',
+    'could',
+    'could you',
+    'please',
+    'write',
+    'create',
+    'build',
+    'make',
+    'implement',
+    'generate',
+    'draft',
+    'summarize',
+    'explain',
+    'fix',
+    'update',
+    'open',
+    'find',
+    'search',
+    'read',
+    'analyze',
+    'help',
+    'tell',
+    'show',
+    'do',
+    'take',
+    'use',
+    'what',
+    'why',
+    'how',
+    'who',
+    'where',
+    'when',
+  ]);
+  if (exactIncomplete.has(normalized)) return true;
+
+  const words = normalized.split(' ');
+  if (words[0] === 'can' || words[0] === 'could') return words.length < 4;
+  if (words[0] === 'please') return words.length < 3;
+  if (words[0] === 'i' && words.length >= 3 && ['want', 'need', 'would', 'can'].includes(words[1])) return words.length < 4;
+  return words.length <= 1;
+}
+
+function rejectIncompleteTranscriptDecision(
+  decision: ActivityIntentDecision,
+  transcript: string,
+): ActivityIntentDecision {
+  if (!transcriptLooksIncomplete(transcript)) return decision;
+  return {
+    action: 'save_context',
+    title: 'Saved voice context',
+    taskDescription: transcript.trim(),
+    hasEnoughContext: false,
+    screenContextRequired: false,
+    reason: 'The spoken input is incomplete and does not describe a task yet.',
+  };
+}
+
+function actionableTranscriptTaskDecision(
   event: ActivityDaemonEvent,
   decision: ActivityIntentDecision,
   transcript: string,
 ): ActivityIntentDecision {
   if (decision.action === 'create_task' && decision.hasEnoughContext) return decision;
-  if (!hasCapturedImage(event) || !transcriptRequestsImageBackedWork(transcript)) return decision;
+  if (!isTaskCreatingActivityEvent(event) || decision.screenContextRequired || !transcriptLooksActionable(transcript)) return decision;
 
   return {
     action: 'create_task',
-    title: transcript.trim().slice(0, 80) || 'Voice task from screenshot',
+    title: transcript.trim().slice(0, 80) || 'Voice task',
     taskDescription: transcript.trim(),
     hasEnoughContext: true,
-    reason: 'The spoken request is actionable and the captured screenshot provides the visual reference for the task agent.',
+    screenContextRequired: false,
+    reason: 'The transcript is a self-contained actionable task and does not require screen context.',
   };
 }
 
@@ -206,17 +286,38 @@ function activityImageValues(event: ActivityDaemonEvent): unknown[] {
   ].filter(Boolean);
 }
 
+function shouldAttachActivityImages(event: ActivityDaemonEvent, decision: ActivityIntentDecision): boolean {
+  return hasCapturedImage(event) && decision.screenContextRequired;
+}
+
 function buildActivityTaskDescription(
   event: ActivityDaemonEvent,
   decision: ActivityIntentDecision,
   transcript: string,
 ): string {
-  const userRequest = transcript.trim() || selectedText(event) || decision.title;
-  return userRequest || 'Captured screenshot.';
+  const capturedText = selectedText(event);
+  const userRequest = transcript.trim() || decision.taskDescription.trim() || capturedText || decision.title;
+  const sections = [`User request:\n${userRequest || 'Captured screen context.'}`];
+  const attachImages = shouldAttachActivityImages(event, decision);
+
+  if ((decision.screenContextRequired || attachImages) && capturedText && capturedText !== userRequest) {
+    sections.push(`Captured selected text:\n${capturedText}`);
+  }
+
+  const windowContext = activeWindowContext(event);
+  if ((decision.screenContextRequired || attachImages) && windowContext) {
+    sections.push(`Active window:\n${windowContext}`);
+  }
+
+  if (attachImages) {
+    sections.push('Captured image context is available for inspection:\nUse the attached image and its visual summary when it is relevant.');
+  }
+
+  return sections.join('\n\n');
 }
 
 function isTaskCreatingActivityEvent(event: ActivityDaemonEvent): boolean {
-  return event.trigger === 'voice_selection' || event.trigger === 'voice_screenshot';
+  return event.trigger === 'voice_selection' || event.trigger === 'voice_screenshot' || event.trigger === 'voice_transcript';
 }
 
 function normalizedTranscript(event: ActivityDaemonEvent): string {
@@ -522,6 +623,26 @@ class ActivityDaemonService {
     return await fetch(`${this.url()}${path}`, init);
   }
 
+  async transcribeFile(audioPath: string, language?: string | null): Promise<AsrTranscriptionResponse> {
+    const response = await this.request('/speech/transcribe-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_path: audioPath, language: language || null }),
+    });
+    const payload = await response.json().catch(() => ({})) as {
+      text?: string;
+      language?: string | null;
+      durationMs?: number;
+      error?: string;
+    };
+    if (!response.ok) throw new Error(payload.error || `Activity daemon transcription failed with HTTP ${response.status}.`);
+    return {
+      text: (payload.text ?? '').trim(),
+      language: payload.language ?? language ?? null,
+      durationMs: typeof payload.durationMs === 'number' ? payload.durationMs : 0,
+    };
+  }
+
   openUiOnWake(url: string): void {
     this.wakeUiUrl = url;
     if (this.enabled()) this.startEventSubscription();
@@ -651,6 +772,7 @@ class ActivityDaemonService {
         title: 'Saved voice context',
         taskDescription: '',
         hasEnoughContext: false,
+        screenContextRequired: false,
         reason: 'Spoken input and captured context are empty or still pending.',
       };
       await this.broadcastActivityDraft(event, decision, capturedText);
@@ -660,7 +782,13 @@ class ActivityDaemonService {
     try {
       const activeSettings = getActiveActivityAgentSettings();
       decision = await this.judgeActivityIntent(transcript, event, activeSettings);
-      decision = imageBackedTaskDecision(event, decision, transcript);
+      decision = rejectIncompleteTranscriptDecision(decision, transcript);
+      decision = actionableTranscriptTaskDecision(event, decision, transcript);
+      console.log(
+        `[activity-daemon] activity intent decision: action=${decision.action}, `
+        + `hasEnoughContext=${decision.hasEnoughContext}, screenContextRequired=${decision.screenContextRequired}, `
+        + `title="${decision.title}", reason="${decision.reason}"`,
+      );
     } catch (error) {
       decision = {
         action: 'save_context',
@@ -668,6 +796,7 @@ class ActivityDaemonService {
         taskDescription: transcript,
         hasEnoughContext: false,
         reason: `Activity intent classification failed: ${formatError(error)}`,
+        screenContextRequired: false,
       };
       await this.broadcastActivityDraft(event, decision, capturedText);
       return;
@@ -720,7 +849,7 @@ class ActivityDaemonService {
         reasoningEffort: activeSettings.reasoningEffort,
       });
       const attachments = await enrichImageAttachmentContext(
-        await saveActivityImageAttachments(task.id, activityImageValues(event)),
+        await saveActivityImageAttachments(task.id, shouldAttachActivityImages(event, decision) ? activityImageValues(event) : []),
       );
       if (attachments.length > 0) {
         task = updateTask(task.id, {
@@ -756,6 +885,10 @@ class ActivityDaemonService {
       decision,
       promoted_task_id: null,
     });
+    console.log(
+      `[activity-daemon] saved activity context: id=${context.id}, `
+      + `trigger=${context.trigger}, title="${context.decision?.title || 'Saved voice context'}"`,
+    );
     broadcast({ type: 'activity_context_created', context });
     broadcast({ type: 'activity_draft_created', context });
     return context;

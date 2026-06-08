@@ -3,6 +3,7 @@ from __future__ import annotations
 import audioop
 from datetime import datetime, timezone
 import difflib
+import json
 import os
 from pathlib import Path
 import re
@@ -10,6 +11,7 @@ import tempfile
 import threading
 import time
 from typing import Any, Callable
+import wave
 
 from .config import ActivityConfig
 
@@ -31,6 +33,18 @@ WAKE_WORDS = (
     "hello",
 )
 SHORT_WAKE_WORDS = ("a d", "ad")
+ASR_FRAGMENT_WAKE_WORDS = {
+    "bee",
+    "bees",
+    "beez",
+    "peace",
+    "piece",
+    "please",
+    "base",
+    "rip",
+    "rib",
+    "rep",
+}
 RELAXED_WAKE_VARIANTS = {
     "a b",
     "ab",
@@ -58,8 +72,10 @@ RISKY_ASR_CONFUSED_WAKE_PREFIXES = (
 )
 COMMAND_STARTERS_AFTER_WAKE = {
     "can",
+    "check",
     "could",
     "create",
+    "describe",
     "make",
     "build",
     "open",
@@ -72,6 +88,73 @@ COMMAND_STARTERS_AFTER_WAKE = {
     "explain",
     "tell",
     "help",
+    "fix",
+    "read",
+    "analyze",
+    "use",
+    "do",
+    "take",
+    "what",
+    "why",
+    "how",
+    "who",
+    "where",
+    "when",
+}
+NOISE_COMMAND_TRANSCRIPTS = {
+    "a",
+    "an",
+    "the",
+    "oh",
+    "okay",
+    "ok",
+    "um",
+    "uh",
+    "hmm",
+    "hm",
+    "ah",
+    "eh",
+    "i",
+    "i m",
+    "im",
+    "i am",
+    "okay let s get it",
+    "let s get it",
+}
+INCOMPLETE_COMMAND_TRANSCRIPTS = {
+    "can",
+    "can you",
+    "could",
+    "could you",
+    "please",
+    "write",
+    "create",
+    "build",
+    "make",
+    "implement",
+    "generate",
+    "draft",
+    "summarize",
+    "explain",
+    "fix",
+    "update",
+    "open",
+    "find",
+    "search",
+    "read",
+    "analyze",
+    "help",
+    "tell",
+    "show",
+    "do",
+    "take",
+    "use",
+    "what",
+    "why",
+    "how",
+    "who",
+    "where",
+    "when",
 }
 
 
@@ -103,6 +186,9 @@ def wake_word_match_reason(text: str, wake_phrase: str | None = None, match_mode
 
     if normalized in STRICT_FALSE_POSITIVES or compact in STRICT_FALSE_POSITIVES:
         return None
+
+    if relaxed and normalized in ASR_FRAGMENT_WAKE_WORDS:
+        return f"asr-fragment wake: {normalized}"
 
     if relaxed:
         confused_wake = confused_wake_prefix(normalized)
@@ -150,6 +236,85 @@ def contains_wake_word(text: str, wake_phrase: str | None = None, match_mode: st
     return wake_word_match_reason(text, wake_phrase, match_mode) is not None
 
 
+def meaningful_spoken_input(text: str) -> str:
+    normalized = normalize_spoken_text(text)
+    if not normalized or normalized in NOISE_COMMAND_TRANSCRIPTS or normalized in INCOMPLETE_COMMAND_TRANSCRIPTS:
+        return ""
+    return normalized
+
+
+def has_command_body(command: str) -> bool:
+    words = command.split()
+    if len(words) <= 1:
+        return False
+    if words[0] in {"can", "could"}:
+        return len(words) >= 4
+    if words[0] == "please":
+        return len(words) >= 3
+    if words[0] == "i" and len(words) >= 3 and words[1] in {"want", "need", "would", "can"}:
+        return len(words) >= 4
+    return True
+
+
+def command_like_spoken_input(text: str, *, allow_any_meaningful: bool = False) -> str:
+    command = meaningful_spoken_input(text)
+    if not command:
+        return ""
+
+    words = command.split()
+    if not words:
+        return ""
+    if not has_command_body(command):
+        return ""
+    if words[0] in COMMAND_STARTERS_AFTER_WAKE:
+        return command
+    if words[0] == "please" and len(words) >= 2:
+        return command
+    if words[0] == "i" and len(words) >= 3 and words[1] in {"want", "need", "would", "can"}:
+        return command
+    if allow_any_meaningful:
+        return command
+    return ""
+
+
+def command_has_explicit_intent(command: str) -> bool:
+    words = command.split()
+    if not words:
+        return False
+    if words[0] in COMMAND_STARTERS_AFTER_WAKE:
+        return True
+    return words[0] == "please" or (words[0] == "i" and len(words) >= 3 and words[1] in {"want", "need", "would", "can"})
+
+
+def confirmed_wake_spoken_input(text: str) -> str:
+    return command_like_spoken_input(text, allow_any_meaningful=True)
+
+
+def merge_spoken_input_prefix(prefix: str, suffix: str) -> str:
+    prefix = meaningful_spoken_input(prefix)
+    suffix = meaningful_spoken_input(suffix)
+    if not prefix:
+        return suffix
+    if not suffix:
+        return prefix
+    if prefix == suffix or suffix in prefix:
+        return prefix
+    if prefix in suffix:
+        return suffix
+
+    prefix_words = prefix.split()
+    suffix_words = suffix.split()
+    if prefix_words and suffix_words and prefix_words[-1] in {"a", "an", "the"} and suffix_words[0] in {"a", "an", "the"}:
+        suffix_words = suffix_words[1:]
+
+    max_overlap = min(len(prefix_words), len(suffix_words))
+    for overlap in range(max_overlap, 0, -1):
+        if prefix_words[-overlap:] == suffix_words[:overlap]:
+            return " ".join(prefix_words + suffix_words[overlap:]).strip()
+
+    return " ".join(prefix_words + suffix_words).strip()
+
+
 def command_after_wake_phrase(text: str, wake_phrase: str | None = None) -> str | None:
     normalized = normalize_spoken_text(text)
     if not normalized:
@@ -168,25 +333,25 @@ def command_after_wake_phrase(text: str, wake_phrase: str | None = None) -> str 
         if normalized == wake_word:
             return ""
         if normalized.startswith(f"{wake_word} "):
-            return normalized[len(wake_word):].strip()
+            return command_like_spoken_input(normalized[len(wake_word):].strip(), allow_any_meaningful=True)
 
         marker = f" {wake_word} "
         index = normalized.find(marker)
         if index >= 0:
-            return normalized[index + len(marker):].strip()
+            return command_like_spoken_input(normalized[index + len(marker):].strip(), allow_any_meaningful=True)
 
     words = normalized.split()
     if words and words[0] in {"hey", "hay", "hi"}:
         bee_like_words = {"b", "be", "bee", "bees", "beez", "peace", "piece", "please", "base", "beast"}
         for index, word in enumerate(words[1:4], start=1):
             if word in bee_like_words:
-                return " ".join(words[index + 1:]).strip()
+                return command_like_spoken_input(" ".join(words[index + 1:]).strip(), allow_any_meaningful=True)
 
     confused_wake = confused_wake_prefix(normalized)
     if confused_wake is not None:
         if normalized == confused_wake:
             return ""
-        return normalized[len(confused_wake):].strip()
+        return command_like_spoken_input(normalized[len(confused_wake):].strip(), allow_any_meaningful=True)
 
     return None
 
@@ -280,6 +445,47 @@ class OpenWakeWordDetector:
             self._last_event_at = datetime.now(timezone.utc).isoformat()
             raise
 
+    def reset(self) -> None:
+        if not self.config.wakeword_engine_enabled:
+            return
+        model = self._ensure_model_loaded()
+        reset = getattr(model, "reset", None)
+        if callable(reset):
+            reset()
+
+    def predict_pcm16(self, raw_data: bytes) -> tuple[bool, float]:
+        if not self.config.wakeword_engine_enabled:
+            return False, 0.0
+
+        try:
+            import numpy as np
+
+            model = self._ensure_model_loaded()
+            audio = np.frombuffer(raw_data, dtype=np.int16)
+            if audio.size == 0:
+                self._record_result(False, 0.0)
+                return False, 0.0
+
+            chunk_size = int(self.config.wakeword_chunk_size)
+            if audio.size < chunk_size:
+                audio = np.pad(audio, (0, chunk_size - audio.size))
+            elif audio.size > chunk_size:
+                audio = audio[:chunk_size]
+
+            model_name = self._resolve_model_name(model)
+            prediction = model.predict(audio)
+            score = float(prediction.get(model_name, 0.0))
+            detected = score >= float(self.config.wakeword_threshold)
+            self._record_result(detected, score)
+            if detected:
+                self.reset()
+            return detected, score
+        except Exception as error:
+            self._last_error = str(error)
+            self._last_detected = False
+            self._last_event_at = datetime.now(timezone.utc).isoformat()
+            raise
+
     def _ensure_model_loaded(self):
         if self._model is not None:
             return self._model
@@ -358,6 +564,7 @@ class SpeechArmController:
         self._resolved_dtype: str | None = None
         self._model = None
         self._model_lock = threading.Lock()
+        self._asr_inference_lock = threading.Lock()
         self._wakeword_detector = OpenWakeWordDetector(config)
         self._vad_model = None
         self._vad_lock = threading.Lock()
@@ -367,13 +574,18 @@ class SpeechArmController:
         self._last_gate_reason = ""
         self._last_gate_log_at = 0.0
         self._last_listening_log_at = 0.0
+        self._last_wake_score_log_at = 0.0
+        self._debug_audio_lock = threading.Lock()
+        self._debug_audio_counter = 0
 
     def availability(self) -> dict[str, object]:
         try:
             import speech_recognition  # noqa: F401
             import pyaudio  # noqa: F401
             import torch  # noqa: F401
-            import qwen_asr  # noqa: F401
+            import torchaudio  # noqa: F401
+            import soundfile  # noqa: F401
+            import transformers  # noqa: F401
             import silero_vad  # noqa: F401
             wakeword_status = self._wakeword_detector.availability()
             return {
@@ -450,7 +662,7 @@ class SpeechArmController:
 
     def _load_asr_model(self):
         import torch
-        from qwen_asr import Qwen3ASRModel
+        from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
         device_map = self._resolve_device_map(torch)
         dtype = self._resolve_dtype(torch, device_map)
@@ -464,20 +676,25 @@ class SpeechArmController:
         except Exception:
             pass
 
-        model = Qwen3ASRModel.from_pretrained(
+        processor = AutoProcessor.from_pretrained(self.config.asr_model_id)
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
             self.config.asr_model_id,
-            dtype=dtype,
-            device_map=device_map,
-            max_inference_batch_size=1,
-            max_new_tokens=self.config.asr_max_new_tokens,
+            torch_dtype=dtype,
         )
-        generation_config = getattr(model.model, "generation_config", None)
+        model.to(device_map)
+        model.eval()
+        generation_config = getattr(model, "generation_config", None)
         if generation_config is not None:
             generation_config.temperature = None
             if generation_config.pad_token_id is None:
                 generation_config.pad_token_id = generation_config.eos_token_id
         self._mark_status("ASR model loaded")
-        return model
+        return {
+            "processor": processor,
+            "tokenizer": processor.tokenizer,
+            "model": model,
+            "device": device_map,
+        }
 
     def _load_vad_model(self):
         from silero_vad import load_silero_vad
@@ -563,6 +780,22 @@ class SpeechArmController:
             flush=True,
         )
 
+    def _debug_wakeword_score(self, score: float) -> None:
+        if not self.config.debug_wake:
+            return
+        if not self.config.debug_wake_scores and score < float(self.config.wakeword_threshold):
+            return
+        now = time.monotonic()
+        if now - self._last_wake_score_log_at < 0.5:
+            return
+        self._last_wake_score_log_at = now
+        print(
+            "[activity-daemon][speech] "
+            f"openWakeWord score {score:.3f} "
+            f"(threshold={self.config.wakeword_threshold:.2f})",
+            flush=True,
+        )
+
     def _audio_stats(self, audio_data) -> tuple[int, float]:
         raw_data = audio_data.get_raw_data()
         if not raw_data:
@@ -571,34 +804,206 @@ class SpeechArmController:
         duration = len(raw_data) / (audio_data.sample_rate * audio_data.sample_width)
         return rms, duration
 
-    def _should_transcribe(self, audio_data, min_rms: int) -> bool:
+    def _debug_audio_dir(self) -> Path:
+        configured = str(getattr(self.config, "speech_debug_audio_dir", "") or "").strip()
+        if configured:
+            return Path(configured).expanduser()
+        return self.config.root / "audio-debug"
+
+    def _debug_audio_category(self, stage: str) -> str:
+        normalized = stage.lower()
+        if normalized.startswith("wakeword_") or normalized.startswith("wake_"):
+            return "hey-bee-trigger"
+        if normalized.startswith("command_"):
+            return "command-asr-inputs"
+        return "activity-daemon-other"
+
+    def _next_debug_audio_path(self, stage: str, suffix: str = ".wav") -> Path:
+        safe_stage = re.sub(r"[^a-zA-Z0-9_.-]+", "_", stage).strip("_") or "audio"
+        with self._debug_audio_lock:
+            self._debug_audio_counter += 1
+            counter = self._debug_audio_counter
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        return self._debug_audio_dir() / self._debug_audio_category(stage) / f"{timestamp}_{counter:04d}_{safe_stage}{suffix}"
+
+    def _save_debug_audio_data(
+        self,
+        stage: str,
+        audio_data,
+        metadata: dict[str, Any] | None = None,
+        *,
+        convert_rate: int | None = None,
+        convert_width: int | None = None,
+    ) -> Path | None:
+        if not getattr(self.config, "speech_debug_save_audio", False):
+            return None
+
+        try:
+            debug_dir = self._debug_audio_dir()
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            audio_path = self._next_debug_audio_path(stage)
+            audio_path.parent.mkdir(parents=True, exist_ok=True)
+            wav_data = audio_data.get_wav_data(convert_rate=convert_rate, convert_width=convert_width)
+            audio_path.write_bytes(wav_data)
+
+            rms, duration = self._audio_stats(audio_data)
+            raw_data = audio_data.get_raw_data()
+            details = {
+                "stage": stage,
+                "category": self._debug_audio_category(stage),
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "wav_path": str(audio_path),
+                "source_sample_rate": int(getattr(audio_data, "sample_rate", 0) or 0),
+                "source_sample_width": int(getattr(audio_data, "sample_width", 0) or 0),
+                "source_raw_bytes": len(raw_data),
+                "source_duration_seconds": round(duration, 3),
+                "source_rms": int(rms),
+                "wav_convert_rate": convert_rate,
+                "wav_convert_width": convert_width,
+            }
+            if metadata:
+                details.update(metadata)
+            audio_path.with_suffix(".json").write_text(json.dumps(details, indent=2), encoding="utf-8")
+            print(f"[activity-daemon][speech] saved debug audio {stage}: {audio_path}", flush=True)
+            return audio_path
+        except Exception as error:
+            self._last_error = f"Failed to save debug audio: {error}"
+            print(f"[activity-daemon][speech] {self._last_error}", flush=True)
+            return None
+
+    def _save_debug_pcm16_data(
+        self,
+        stage: str,
+        raw_data: bytes,
+        metadata: dict[str, Any] | None = None,
+        *,
+        sample_rate: int = 16000,
+        sample_width: int = 2,
+        channels: int = 1,
+    ) -> Path | None:
+        if not getattr(self.config, "speech_debug_save_audio", False):
+            return None
+
+        try:
+            debug_dir = self._debug_audio_dir()
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            pcm_path = self._next_debug_audio_path(stage, ".pcm16")
+            pcm_path.parent.mkdir(parents=True, exist_ok=True)
+            pcm_path.write_bytes(raw_data)
+
+            wav_path = pcm_path.with_suffix(".wav")
+            with wave.open(str(wav_path), "wb") as wav_file:
+                wav_file.setnchannels(channels)
+                wav_file.setsampwidth(sample_width)
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(raw_data)
+
+            frame_bytes = max(1, channels * sample_width)
+            frame_count = len(raw_data) // frame_bytes
+            details = {
+                "stage": stage,
+                "category": self._debug_audio_category(stage),
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "pcm16_path": str(pcm_path),
+                "wav_path": str(wav_path),
+                "sample_rate": int(sample_rate),
+                "sample_width": int(sample_width),
+                "channels": int(channels),
+                "raw_bytes": len(raw_data),
+                "samples_per_channel": frame_count,
+                "duration_seconds": round(frame_count / sample_rate, 3) if sample_rate > 0 else 0,
+                "rms": int(audioop.rms(raw_data, sample_width)) if raw_data else 0,
+            }
+            if metadata:
+                details.update(metadata)
+            pcm_path.with_suffix(".json").write_text(json.dumps(details, indent=2), encoding="utf-8")
+            print(f"[activity-daemon][speech] saved debug pcm16 {stage}: {pcm_path}", flush=True)
+            return pcm_path
+        except Exception as error:
+            self._last_error = f"Failed to save debug PCM audio: {error}"
+            print(f"[activity-daemon][speech] {self._last_error}", flush=True)
+            return None
+
+    def _update_debug_audio_metadata(self, audio_path: Path | None, metadata: dict[str, Any]) -> None:
+        if audio_path is None:
+            return
+
+        try:
+            metadata_path = audio_path.with_suffix(".json")
+            existing: dict[str, Any] = {}
+            if metadata_path.exists():
+                existing = json.loads(metadata_path.read_text(encoding="utf-8"))
+            existing.update(metadata)
+            metadata_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        except Exception as error:
+            print(f"[activity-daemon][speech] failed to update debug metadata: {error}", flush=True)
+
+    def _should_transcribe(self, audio_data, min_rms: int, label: str) -> bool:
         rms, duration = self._audio_stats(audio_data)
         if rms < min_rms or duration < self.config.min_audio_seconds:
             self._last_gate_reason = f"RMS/duration gate rejected audio (rms={rms}, duration={duration:.2f}s)"
+            self._save_debug_audio_data(
+                f"{label}_gate_rejected_source",
+                audio_data,
+                {"gate": "rms_duration", "min_rms": int(min_rms), "min_audio_seconds": float(self.config.min_audio_seconds)},
+            )
             return False
-        accepted = self._has_voice_activity(audio_data)
+        accepted = self._has_voice_activity(audio_data, label)
         if accepted:
-            self._last_gate_reason = f"Silero VAD accepted audio ({self._vad_last_speech_seconds:.2f}s speech)"
+            self._last_gate_reason = (
+                f"Silero VAD accepted audio ({self._vad_last_speech_seconds:.2f}s speech, "
+                f"rms={rms}, duration={duration:.2f}s)"
+            )
         else:
-            self._last_gate_reason = "Silero VAD rejected audio (no speech detected)"
+            self._last_gate_reason = f"Silero VAD rejected audio (no speech detected, rms={rms}, duration={duration:.2f}s)"
         return accepted
 
-    def _has_voice_activity(self, audio_data) -> bool:
+    def _has_voice_activity(self, audio_data, label: str) -> bool:
         try:
             model = self._ensure_vad_loaded()
             from silero_vad import get_speech_timestamps
             import torch
 
             raw_data = audio_data.get_raw_data(convert_rate=16000, convert_width=2)
+            debug_metadata = {
+                "vad_sample_rate": 16000,
+                "vad_sample_width": 2,
+                "vad_threshold": float(self.config.vad_threshold),
+                "vad_min_speech_duration_ms": int(self.config.vad_min_speech_duration_ms),
+                "vad_min_silence_duration_ms": int(self.config.vad_min_silence_duration_ms),
+                "vad_speech_pad_ms": int(self.config.vad_speech_pad_ms),
+            }
+            self._save_debug_pcm16_data(
+                f"{label}_vad_input_pcm16",
+                raw_data,
+                {
+                    **debug_metadata,
+                    "handoff": "exact bytes passed to Silero VAD after speech_recognition conversion",
+                },
+            )
             if not raw_data:
                 self._vad_last_speech_seconds = 0.0
                 self._vad_last_timestamps = []
+                self._save_debug_audio_data(
+                    f"{label}_vad_empty",
+                    audio_data,
+                    {**debug_metadata, "vad_accepted": False, "vad_reason": "empty_audio"},
+                    convert_rate=16000,
+                    convert_width=2,
+                )
                 return False
 
-            waveform = torch.frombuffer(raw_data, dtype=torch.int16).clone().float() / 32768.0
+            waveform = torch.frombuffer(bytearray(raw_data), dtype=torch.int16).float() / 32768.0
             if waveform.numel() == 0:
                 self._vad_last_speech_seconds = 0.0
                 self._vad_last_timestamps = []
+                self._save_debug_audio_data(
+                    f"{label}_vad_empty_waveform",
+                    audio_data,
+                    {**debug_metadata, "vad_accepted": False, "vad_reason": "empty_waveform"},
+                    convert_rate=16000,
+                    convert_width=2,
+                )
                 return False
 
             timestamps = get_speech_timestamps(
@@ -621,44 +1026,149 @@ class SpeechArmController:
             self._vad_last_error = None
             self._vad_last_speech_seconds = round(speech_samples / 16000, 3)
             self._vad_last_timestamps = normalized_timestamps[:8]
+            self._save_debug_audio_data(
+                f"{label}_vad_{'accepted' if normalized_timestamps else 'rejected'}",
+                audio_data,
+                {
+                    **debug_metadata,
+                    "vad_accepted": bool(normalized_timestamps),
+                    "vad_speech_seconds": self._vad_last_speech_seconds,
+                    "vad_timestamps": normalized_timestamps,
+                },
+                convert_rate=16000,
+                convert_width=2,
+            )
             return bool(normalized_timestamps)
         except Exception as error:
             self._vad_last_error = str(error)
             self._last_error = f"Silero VAD failed: {error}"
             self._mark_status(self._last_error)
+            self._save_debug_audio_data(
+                f"{label}_vad_error",
+                audio_data,
+                {"vad_accepted": False, "vad_error": str(error)},
+                convert_rate=16000,
+                convert_width=2,
+            )
             return False
 
-    def _transcribe_audio(self, audio_data) -> str:
-        model = self._ensure_model_loaded()
-
+    def _transcribe_audio(self, audio_data, label: str = "audio", *, save_debug: bool = True) -> str:
         fd, temp_path = tempfile.mkstemp(prefix="oneinfer_command_", suffix=".wav")
         os.close(fd)
         with open(temp_path, "wb") as f:
             f.write(audio_data.get_wav_data())
+        debug_asr_path = (
+            self._save_debug_audio_data(
+                f"{label}_asr_input",
+                audio_data,
+                {
+                    "asr_temp_path": temp_path,
+                    "handoff": "WAV bytes written immediately before Granite ASR transcription",
+                },
+            )
+            if save_debug else None
+        )
 
         try:
-            try:
-                results = model.transcribe(audio=[temp_path], language=["English"])
-            except TypeError:
-                results = model.transcribe(audio=temp_path, language="English")
-            if not results:
-                return ""
-            return getattr(results[0], "text", str(results[0])).strip().lower()
+            transcript = self._run_granite_transcription(temp_path).strip().lower()
+            self._update_debug_audio_metadata(
+                debug_asr_path,
+                {
+                    "transcript": transcript,
+                    "asr_temp_deleted_after_transcription": True,
+                },
+            )
+            return transcript
         except Exception as error:
+            self._update_debug_audio_metadata(
+                debug_asr_path,
+                {
+                    "transcription_error": str(error),
+                    "asr_temp_deleted_after_transcription": True,
+                },
+            )
             if self._should_retry_on_cpu(error):
                 self._mark_status(f"ASR inference failed on {self._resolved_device_map}/{self._resolved_dtype}: {error}; retrying on cpu/float32")
                 self._reset_model_for_cpu_float32()
-                model = self._ensure_model_loaded()
-                results = model.transcribe(audio=temp_path, language="English")
-                if not results:
-                    return ""
-                return getattr(results[0], "text", str(results[0])).strip().lower()
+                transcript = self._run_granite_transcription(temp_path).strip().lower()
+                self._update_debug_audio_metadata(
+                    debug_asr_path,
+                    {
+                        "transcript_after_cpu_retry": transcript,
+                        "asr_temp_deleted_after_transcription": True,
+                    },
+                )
+                return transcript
             raise
         finally:
             try:
                 os.remove(temp_path)
             except OSError:
                 pass
+
+    def _command_from_wake_audio(self, wake_audio) -> str:
+        wake_text = self._transcribe_audio(wake_audio, "wake_audio_command_check", save_debug=False)
+        self._last_wake_text = wake_text or self._last_wake_text
+        command = command_after_wake_phrase(wake_text, self.config.wake_phrase)
+        if command is None and wake_text:
+            command = command_like_spoken_input(wake_text, allow_any_meaningful=False)
+        else:
+            command = command_like_spoken_input(command or "", allow_any_meaningful=True)
+        if self.config.debug_wake and wake_text and not command:
+            self._mark_status(f"ignored non-command wake audio transcript: {wake_text}")
+        return command
+
+    def _run_granite_transcription(self, audio_path: str) -> str:
+        import torch
+        import soundfile as sf
+        import torchaudio
+
+        with self._asr_inference_lock:
+            runtime = self._ensure_model_loaded()
+            processor = runtime["processor"]
+            tokenizer = runtime["tokenizer"]
+            model = runtime["model"]
+            device = runtime["device"]
+
+            audio_array, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
+            wav = torch.from_numpy(audio_array).transpose(0, 1)
+            if wav.numel() == 0:
+                return ""
+            if wav.shape[0] > 1:
+                wav = wav.mean(dim=0, keepdim=True)
+            if sample_rate != 16000:
+                wav = torchaudio.functional.resample(wav, sample_rate, 16000)
+            wav = wav.squeeze(0).to(torch.float32)
+
+            chat = [{"role": "user", "content": "<|audio|>Write only the exact English words spoken in the audio. Do not add, remove, or guess words."}]
+            prompt = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+            model_inputs = processor(prompt, wav, device=device, return_tensors="pt").to(device)
+
+            with torch.no_grad():
+                model_outputs = model.generate(
+                    **model_inputs,
+                    max_new_tokens=self.config.asr_max_new_tokens,
+                    do_sample=False,
+                    num_beams=1,
+                )
+
+            num_input_tokens = model_inputs["input_ids"].shape[-1]
+            new_tokens = model_outputs[0, num_input_tokens:].unsqueeze(0)
+            return tokenizer.batch_decode(
+                new_tokens,
+                add_special_tokens=False,
+                skip_special_tokens=True,
+            )[0]
+
+    def transcribe_file(self, audio_path: str, language: str | None = None) -> dict[str, Any]:
+        started = time.perf_counter()
+        text = self._run_granite_transcription(audio_path).strip()
+        return {
+            "text": text,
+            "language": language,
+            "durationMs": int((time.perf_counter() - started) * 1000),
+            "source": "activity-daemon",
+        }
 
     def _should_retry_on_cpu(self, error: Exception) -> bool:
         message = str(error).lower()
@@ -676,13 +1186,90 @@ class SpeechArmController:
             self._resolved_device_map = None
             self._resolved_dtype = None
 
+    def _listen_for_openwakeword_stream(self) -> tuple[bool, float, Any | None]:
+        import pyaudio
+        import speech_recognition as sr
+
+        chunk_size = int(self.config.wakeword_chunk_size)
+        audio = pyaudio.PyAudio()
+        stream = None
+        self._wakeword_detector.reset()
+        try:
+            stream = audio.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=16000,
+                input=True,
+                frames_per_buffer=chunk_size,
+            )
+            while not self.stop_event.is_set():
+                if self.is_input_suppressed_callback() or self.is_armed_callback():
+                    return False, 0.0, None
+
+                raw_data = stream.read(chunk_size, exception_on_overflow=False)
+                detected, score = self._wakeword_detector.predict_pcm16(raw_data)
+                self._debug_wakeword_score(score)
+                if detected:
+                    self._save_debug_pcm16_data(
+                        "wakeword_detected_chunk_pcm16",
+                        raw_data,
+                        {
+                            "handoff": "exact 16 kHz int16 chunk passed to openWakeWord when detection fired",
+                            "wakeword_score": float(score),
+                            "wakeword_threshold": float(self.config.wakeword_threshold),
+                            "wakeword_chunk_size": int(chunk_size),
+                        },
+                    )
+                    buffered_audio = bytearray(raw_data)
+                    post_chunks = int((16000 * float(self.config.wakeword_post_capture_seconds)) / chunk_size)
+                    for _ in range(max(0, post_chunks)):
+                        if self.stop_event.is_set() or self.is_input_suppressed_callback() or self.is_armed_callback():
+                            break
+                        buffered_audio.extend(stream.read(chunk_size, exception_on_overflow=False))
+                    self._save_debug_pcm16_data(
+                        "wakeword_detected_buffer_pcm16",
+                        bytes(buffered_audio),
+                        {
+                            "handoff": "wake-word chunk plus post-capture audio used as wake_audio",
+                            "wakeword_score": float(score),
+                            "wakeword_threshold": float(self.config.wakeword_threshold),
+                            "wakeword_chunk_size": int(chunk_size),
+                            "wakeword_post_capture_seconds": float(self.config.wakeword_post_capture_seconds),
+                        },
+                    )
+                    wake_audio = sr.AudioData(bytes(buffered_audio), 16000, 2)
+                    self._save_debug_audio_data(
+                        "wakeword_detected_buffer",
+                        wake_audio,
+                        {
+                            "wakeword_score": float(score),
+                            "wakeword_threshold": float(self.config.wakeword_threshold),
+                            "wakeword_chunk_size": int(chunk_size),
+                            "wakeword_post_capture_seconds": float(self.config.wakeword_post_capture_seconds),
+                        },
+                    )
+                    return True, score, wake_audio
+        finally:
+            if stream is not None:
+                try:
+                    stream.stop_stream()
+                except Exception:
+                    pass
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            audio.terminate()
+
+        return False, 0.0, None
+
     def _loop(self) -> None:
         try:
             import speech_recognition as sr
 
             recognizer = sr.Recognizer()
             recognizer.dynamic_energy_threshold = True
-            recognizer.pause_threshold = 0.8
+            recognizer.pause_threshold = float(getattr(self.config, "command_pause_threshold_seconds", 2.0))
             recognizer.non_speaking_duration = 0.4
             microphone = sr.Microphone()
 
@@ -690,6 +1277,7 @@ class SpeechArmController:
                 self._mark_status("calibrating microphone noise")
                 recognizer.adjust_for_ambient_noise(source, duration=1)
                 recognizer.energy_threshold = max(int(recognizer.energy_threshold * 1.5), self.config.min_energy_threshold)
+                recognizer.dynamic_energy_threshold = False
             self._mark_status(f"listening for wake phrase: {self.config.wake_phrase}")
 
             while not self.stop_event.is_set():
@@ -705,55 +1293,75 @@ class SpeechArmController:
                         continue
 
                     self._debug_listening_heartbeat(recognizer)
-                    with microphone as source:
-                        wake_audio = recognizer.listen(source, timeout=2, phrase_time_limit=4)
-
-                    if not self._should_transcribe(wake_audio, self.config.min_wake_audio_rms):
-                        self._debug_gate_skip("wake audio")
-                        continue
-
-                    self._debug_voice_activity("wake audio accepted by required Silero VAD")
+                    recognizer.energy_threshold = max(int(recognizer.energy_threshold), self.config.min_energy_threshold)
                     wake_text = ""
+                    wake_audio = None
                     if self.config.wakeword_engine_enabled:
-                        detected, score = self._wakeword_detector.detect(wake_audio)
-                        self._last_wake_text = f"{self.config.wake_phrase} score={score:.4f}" if detected else ""
-                        if self.is_input_suppressed_callback():
-                            self._mark_status("ignored wake candidate while browser recorder is active")
-                            continue
-                        if not detected:
-                            if not self.config.wakeword_asr_fallback_enabled:
-                                self._mark_status(
-                                    f"listening for wake phrase: {self.config.wake_phrase} "
-                                    f"(wake-word model score {score:.4f} below threshold {self.config.wakeword_threshold:.2f})"
-                                )
-                                continue
+                        try:
+                            detected, score, wake_audio = self._listen_for_openwakeword_stream()
+                        except Exception as error:
+                            self._last_error = f"openWakeWord stream failed: {error}"
+                            self._mark_status(self._last_error)
+                            detected = False
+                            score = 0.0
+                            wake_audio = None
 
-                            self._mark_status(
-                                "wake-word model score "
-                                f"{score:.4f} below threshold {self.config.wakeword_threshold:.2f}; "
-                                "checking wake audio with Qwen ASR"
-                            )
-                            wake_text = self._transcribe_audio(wake_audio)
+                        if detected:
+                            self._last_wake_text = f"{self.config.wake_phrase} score={score:.4f}"
+                            wake_match = f"openWakeWord score {score:.4f}"
+                            self._mark_status(f"wake word detected: {self.config.wake_phrase} (score {score:.4f})")
+                        else:
+                            if self.stop_event.is_set():
+                                continue
+                            if self.is_input_suppressed_callback():
+                                self._mark_status("ignored wake candidate while browser recorder is active")
+                                continue
+                            if self.is_armed_callback():
+                                continue
+                            if not self.config.wakeword_asr_fallback_enabled:
+                                continue
+                            if self.config.debug_wake:
+                                self._mark_status(
+                                    "openWakeWord did not produce a detection; "
+                            "checking wake audio with Granite ASR fallback"
+                                )
+                            with microphone as source:
+                                wake_audio = recognizer.listen(source, timeout=2, phrase_time_limit=4)
+                            if not self._should_transcribe(wake_audio, self.config.min_wake_audio_rms, "wake_fallback"):
+                                self._debug_gate_skip("wake audio")
+                                continue
+                            self._debug_voice_activity("wake audio accepted by required Silero VAD")
+                            wake_text = self._transcribe_audio(wake_audio, "wake_fallback")
                             self._last_wake_text = wake_text
                             if self.is_input_suppressed_callback():
                                 self._mark_status("ignored wake candidate while browser recorder is active")
                                 continue
-                            self._mark_status(f"heard wake fallback candidate: {wake_text or '[empty]'}")
+                            if self.config.debug_wake:
+                                self._mark_status(f"heard wake fallback candidate: {wake_text or '[empty]'}")
                             wake_match = wake_word_match_reason(wake_text, self.config.wake_phrase, self.config.wake_match_mode)
-                        else:
-                            wake_match = f"openWakeWord score {score:.4f}"
                     else:
-                        print("[activity-daemon][speech] transcribing wake audio with Qwen ASR", flush=True)
-                        wake_text = self._transcribe_audio(wake_audio)
+                        with microphone as source:
+                            wake_audio = recognizer.listen(source, timeout=2, phrase_time_limit=4)
+
+                        if not self._should_transcribe(wake_audio, self.config.min_wake_audio_rms, "wake_phrase"):
+                            self._debug_gate_skip("wake audio")
+                            continue
+
+                        self._debug_voice_activity("wake audio accepted by required Silero VAD")
+                        if self.config.debug_wake:
+                            print("[activity-daemon][speech] transcribing wake audio with Granite ASR", flush=True)
+                        wake_text = self._transcribe_audio(wake_audio, "wake_phrase")
                         self._last_wake_text = wake_text
                         if self.is_input_suppressed_callback():
                             self._mark_status("ignored wake candidate while browser recorder is active")
                             continue
 
-                        self._mark_status(f"heard wake candidate: {wake_text or '[empty]'}")
+                        if self.config.debug_wake:
+                            self._mark_status(f"heard wake candidate: {wake_text or '[empty]'}")
                         wake_match = wake_word_match_reason(wake_text, self.config.wake_phrase, self.config.wake_match_mode)
                     if not wake_match:
-                        self._mark_status(f"listening for wake phrase: {self.config.wake_phrase}")
+                        if self.config.debug_wake:
+                            self._mark_status(f"listening for wake phrase: {self.config.wake_phrase}")
                         continue
 
                     if not self.config.listen_for_command_after_wake:
@@ -772,14 +1380,29 @@ class SpeechArmController:
                     self._mark_status(f"wake phrase matched via {wake_match}; listening for spoken task input")
                     self.arm_callback("[input pending]", input_pending=True)
 
-                    if same_utterance_command is None and self.config.wakeword_engine_enabled and wake_match.startswith("openWakeWord"):
+                    can_check_wake_audio = (
+                        same_utterance_command is None
+                        and wake_audio is not None
+                        and self.config.wakeword_engine_enabled
+                        and wake_match.startswith("openWakeWord")
+                    )
+
+                    command_audio = None
+                    try:
+                        with microphone as source:
+                            phrase_limit = float(self.config.command_phrase_time_limit_seconds)
+                            command_audio = recognizer.listen(
+                                source,
+                                timeout=float(self.config.command_listen_timeout_seconds),
+                                phrase_time_limit=phrase_limit if phrase_limit > 0 else None,
+                            )
+                    except sr.WaitTimeoutError:
+                        pass
+
+                    if command_audio is None and can_check_wake_audio:
                         try:
                             self._mark_status("wake matched; checking wake audio for spoken task input")
-                            wake_text = self._transcribe_audio(wake_audio)
-                            self._last_wake_text = wake_text or self._last_wake_text
-                            same_utterance_command = command_after_wake_phrase(wake_text, self.config.wake_phrase)
-                            if same_utterance_command is None and wake_text:
-                                same_utterance_command = wake_text
+                            same_utterance_command = self._command_from_wake_audio(wake_audio)
                             if same_utterance_command:
                                 self._last_command_text = same_utterance_command
                                 self._mark_status(f"captured spoken input from wake audio: {same_utterance_command}")
@@ -789,31 +1412,55 @@ class SpeechArmController:
                             self._last_error = f"Wake word heard; wake-audio command transcription failed: {error}"
                             self._mark_status("wake matched; wake-audio command transcription failed, listening for spoken task input")
 
-                    try:
-                        with microphone as source:
-                            command_audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
-                    except sr.WaitTimeoutError:
+                    if command_audio is None:
                         self._last_error = "Wake word heard; no spoken input followed. Waiting for selection."
                         self.spoken_input_callback("[input pending]")
                         self._mark_status("wake matched; no follow-up speech, waiting for selection")
                         continue
 
                     command_min_rms = min(self.config.min_command_audio_rms, max(60, int(recognizer.energy_threshold * 0.25)))
-                    if not self._should_transcribe(command_audio, command_min_rms):
+                    if not self._should_transcribe(command_audio, command_min_rms, "command"):
                         self._debug_gate_skip("command audio")
+                        if can_check_wake_audio:
+                            try:
+                                self._mark_status("command audio rejected; checking wake audio for spoken task input")
+                                same_utterance_command = self._command_from_wake_audio(wake_audio)
+                                if same_utterance_command:
+                                    self._last_command_text = same_utterance_command
+                                    self._mark_status(f"captured spoken input from wake audio: {same_utterance_command}")
+                                    self.spoken_input_callback(same_utterance_command)
+                                    continue
+                            except Exception as error:
+                                self._last_error = f"Wake word heard; wake-audio command transcription failed: {error}"
                         self._last_error = "Wake word heard; follow-up input was too quiet or too short. Waiting for selection."
                         self.spoken_input_callback("[input pending]")
                         self._mark_status("wake matched; follow-up speech too quiet, waiting for selection")
                         continue
 
                     self._debug_voice_activity("command audio accepted by required Silero VAD")
-                    print("[activity-daemon][speech] transcribing command audio with Qwen ASR", flush=True)
-                    spoken_input = self._transcribe_audio(command_audio)
-                    self._last_command_text = spoken_input
+                    print("[activity-daemon][speech] transcribing command audio with Granite ASR", flush=True)
+                    raw_spoken_input = self._transcribe_audio(command_audio, "command")
+                    spoken_input = confirmed_wake_spoken_input(raw_spoken_input)
+                    should_check_wake_prefix = (
+                        can_check_wake_audio
+                        and raw_spoken_input
+                        and (not spoken_input or not command_has_explicit_intent(spoken_input))
+                    )
+                    if should_check_wake_prefix:
+                        try:
+                            self._mark_status("checking wake audio for clipped spoken task prefix")
+                            wake_spoken_input = self._command_from_wake_audio(wake_audio)
+                            if wake_spoken_input:
+                                spoken_input = merge_spoken_input_prefix(wake_spoken_input, spoken_input)
+                        except Exception as error:
+                            self._last_error = f"Wake word heard; wake-audio command transcription failed: {error}"
+                    self._last_command_text = spoken_input or raw_spoken_input
                     if spoken_input:
                         self._mark_status(f"captured spoken input: {spoken_input}")
                         self.spoken_input_callback(spoken_input)
                     else:
+                        if raw_spoken_input:
+                            self._mark_status(f"ignored non-command transcript: {raw_spoken_input}")
                         self._last_error = "Wake word heard; no spoken input transcribed. Waiting for selection."
                         self.spoken_input_callback("[input pending]")
                         self._mark_status("wake matched; no follow-up speech transcribed, waiting for selection")

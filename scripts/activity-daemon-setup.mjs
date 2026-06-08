@@ -24,20 +24,20 @@ function expandHomePrefix(value) {
   return value;
 }
 
-function qwenVenvDir() {
-  return resolve(process.cwd(), '.venv-qwen-asr');
+function graniteVenvDir() {
+  return resolve(process.cwd(), '.venv-granite-asr');
 }
 
-function qwenVenvPython() {
+function graniteVenvPython() {
   return isWindows()
-    ? join(qwenVenvDir(), 'Scripts', 'python.exe')
-    : join(qwenVenvDir(), 'bin', 'python');
+    ? join(graniteVenvDir(), 'Scripts', 'python.exe')
+    : join(graniteVenvDir(), 'bin', 'python');
 }
 
-function qwenVenvBinDir() {
+function graniteVenvBinDir() {
   return isWindows()
-    ? join(qwenVenvDir(), 'Scripts')
-    : join(qwenVenvDir(), 'bin');
+    ? join(graniteVenvDir(), 'Scripts')
+    : join(graniteVenvDir(), 'bin');
 }
 
 function existingFile(path) {
@@ -93,8 +93,8 @@ function bootstrapPython(localEnv) {
   const activityPython = configuredValue(localEnv, 'BEES_ACTIVITY_PYTHON');
   if (activityPython && existingFile(activityPython)) return existingFile(activityPython);
 
-  const qwenPython = configuredValue(localEnv, 'QWEN_ASR_PYTHON');
-  if (qwenPython && existingFile(qwenPython)) return existingFile(qwenPython);
+  const granitePython = configuredValue(localEnv, 'GRANITE_ASR_PYTHON') || configuredValue(localEnv, 'QWEN_ASR_PYTHON');
+  if (granitePython && existingFile(granitePython)) return existingFile(granitePython);
 
   const hermesPython = configuredValue(localEnv, 'HERMES_PYTHON');
   if (hermesPython && existingFile(hermesPython)) return existingFile(hermesPython);
@@ -109,11 +109,11 @@ function pythonEnv(python = null) {
     PYTHONNOUSERSITE: '1',
   };
 
-  if (!python || !resolve(python).toLowerCase().startsWith(resolve(qwenVenvDir()).toLowerCase())) {
+  if (!python || !resolve(python).toLowerCase().startsWith(resolve(graniteVenvDir()).toLowerCase())) {
     return base;
   }
 
-  const binDir = qwenVenvBinDir();
+  const binDir = graniteVenvBinDir();
   const currentPath = process.env.PATH || process.env.Path || '';
   const entries = currentPath.split(delimiter).filter(Boolean);
   const alreadyPresent = entries.some((entry) => resolve(entry).toLowerCase() === resolve(binDir).toLowerCase());
@@ -121,7 +121,7 @@ function pythonEnv(python = null) {
 
   return {
     ...base,
-    VIRTUAL_ENV: qwenVenvDir(),
+    VIRTUAL_ENV: graniteVenvDir(),
     PATH: path,
     Path: path,
   };
@@ -269,7 +269,9 @@ function requiredModules() {
     'openwakeword',
     'onnxruntime',
     'torch',
-    'qwen_asr',
+    'torchaudio',
+    'soundfile',
+    'transformers',
     'silero_vad',
     'psutil',
   ];
@@ -303,7 +305,7 @@ function missingModules(python) {
 
 function ensurePip(python) {
   if (pipReady(python)) return;
-  console.log('[activity-daemon-setup] Bootstrapping pip in .venv-qwen-asr...');
+  console.log('[activity-daemon-setup] Bootstrapping pip in .venv-granite-asr...');
   run(python, ['-m', 'ensurepip', '--upgrade'], { pythonForEnv: python });
 }
 
@@ -351,7 +353,7 @@ function installRequirements(python) {
   ensurePip(python);
   const requirements = requirementsPath();
   if (!existsSync(requirements)) throw new Error(`Activity daemon requirements not found: ${requirements}`);
-  console.log('[activity-daemon-setup] Installing activity daemon Python dependencies into .venv-qwen-asr...');
+  console.log('[activity-daemon-setup] Installing activity daemon Python dependencies into .venv-granite-asr...');
   run(python, [
     '-m',
     'pip',
@@ -373,8 +375,8 @@ export function ensureActivityDaemonEnvironment(options = {}) {
   } = options;
 
   const localEnv = parseEnvFile(resolve(process.cwd(), '.env'));
-  const qwenPython = configuredValue(localEnv, 'QWEN_ASR_PYTHON');
-  const python = qwenPython && existingFile(qwenPython) ? existingFile(qwenPython) : qwenVenvPython();
+  const granitePython = configuredValue(localEnv, 'GRANITE_ASR_PYTHON') || configuredValue(localEnv, 'QWEN_ASR_PYTHON');
+  const python = granitePython && existingFile(granitePython) ? existingFile(granitePython) : graniteVenvPython();
   const values = {
     BEES_ACTIVITY_ENABLED: configuredValue(localEnv, 'BEES_ACTIVITY_ENABLED') || 'true',
     BEES_ACTIVITY_HOST: configuredValue(localEnv, 'BEES_ACTIVITY_HOST') || '127.0.0.1',
@@ -396,7 +398,7 @@ export function ensureActivityDaemonEnvironment(options = {}) {
     ensureEnvFiles(values, { writeLocalEnv, writeExampleEnv, exampleValues });
     for (const [key, value] of Object.entries(values)) process.env[key] = value;
     console.log('[activity-daemon-setup] Activity daemon disabled; dependency install skipped.');
-    return { python, installed: existingFile(python) !== null, venvDir: qwenVenvDir(), disabled: true };
+    return { python, installed: existingFile(python) !== null, venvDir: graniteVenvDir(), disabled: true };
   }
 
   const hasDefaultInput = defaultInputDeviceAvailable(localEnv, python);
@@ -405,7 +407,7 @@ export function ensureActivityDaemonEnvironment(options = {}) {
     ensureEnvFiles(values, { writeLocalEnv, writeExampleEnv, exampleValues });
     for (const [key, value] of Object.entries(values)) process.env[key] = value;
     console.log('[activity-daemon-setup] No default input device detected; activity daemon disabled and dependency install skipped.');
-    return { python, installed: existingFile(python) !== null, venvDir: qwenVenvDir(), disabled: true, reason: 'no-default-input-device' };
+    return { python, installed: existingFile(python) !== null, venvDir: graniteVenvDir(), disabled: true, reason: 'no-default-input-device' };
   }
 
   ensureEnvFiles(values, { writeLocalEnv, writeExampleEnv, exampleValues });
@@ -413,15 +415,15 @@ export function ensureActivityDaemonEnvironment(options = {}) {
 
   if (!installIfMissing) {
     console.log('[activity-daemon-setup] Activity daemon dependency install skipped.');
-    return { python, installed: existingFile(python) !== null, venvDir: qwenVenvDir() };
+    return { python, installed: existingFile(python) !== null, venvDir: graniteVenvDir() };
   }
 
   try {
     if (!existsSync(python)) {
       const sourcePython = bootstrapPython(localEnv);
       if (!sourcePython) throw new Error('No Python executable found. Install Python or set BEES_ACTIVITY_BOOTSTRAP_PYTHON.');
-      console.log(`[activity-daemon-setup] Creating ${qwenVenvDir()} with ${sourcePython}`);
-      run(sourcePython, ['-m', 'venv', qwenVenvDir()]);
+      console.log(`[activity-daemon-setup] Creating ${graniteVenvDir()} with ${sourcePython}`);
+      run(sourcePython, ['-m', 'venv', graniteVenvDir()]);
     }
 
     const missingBefore = missingModules(python);
@@ -439,12 +441,12 @@ export function ensureActivityDaemonEnvironment(options = {}) {
 
     console.log(`[activity-daemon-setup] BEES_ACTIVITY_PYTHON=${python}`);
     console.log('[activity-daemon-setup] activity daemon dependencies ready');
-    return { python, installed: true, venvDir: qwenVenvDir() };
+    return { python, installed: true, venvDir: graniteVenvDir() };
   } catch (error) {
     if (failOnInstallError) throw error;
     console.warn(`[activity-daemon-setup] Activity daemon setup warning: ${error instanceof Error ? error.message : String(error)}`);
     console.warn('[activity-daemon-setup] Continuing because activity daemon install is best effort. Run npm run setup:activity to retry.');
-    return { python, installed: false, venvDir: qwenVenvDir(), error };
+    return { python, installed: false, venvDir: graniteVenvDir(), error };
   }
 }
 

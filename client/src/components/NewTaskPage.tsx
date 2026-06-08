@@ -11,8 +11,8 @@ import {
   type ComposerAttachment,
 } from './AttachmentPicker';
 import { ActivityCaptureButton } from './ActivityCaptureButton';
-import { createTask, pickWorkspaceDirectory, transcribeTaskIntentAudio, updateCurrentProject } from '../lib/api';
-import { clearActivityTaskDraft, loadActivityTaskDraft } from '../lib/activityDraft';
+import { createTask, deleteActivityContext, fetchActivityContext, pickWorkspaceDirectory, updateCurrentProject } from '../lib/api';
+import { clearActivityTaskDraft, createActivityTaskDraft, discardActivityTaskDraftOnPageUnload, loadActivityTaskDraft } from '../lib/activityDraft';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { isEditableTarget, handleChatKeyDown } from '../lib/keyboard';
 import { toErrorMessage } from '../lib/format';
@@ -23,6 +23,8 @@ export function NewTaskPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedWorkspacePath = searchParams.get('workspacePath')?.trim() ?? '';
+  const requestedStatus = searchParams.get('status');
+  const shouldStartTask = requestedStatus !== 'pending';
   const activityDraftId = searchParams.get('activityDraft');
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
@@ -35,7 +37,6 @@ export function NewTaskPage() {
   const [isPickingWorkspace, setIsPickingWorkspace] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [voiceIntentMessage, setVoiceIntentMessage] = useState<string | null>(null);
   const [captureStatus, setCaptureStatus] = useState<string | null>(null);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [isApplyingActivityDraft, setIsApplyingActivityDraft] = useState(false);
@@ -47,6 +48,14 @@ export function NewTaskPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const workspaceEditedRef = useRef(false);
   const normalizedWorkspacePath = workspacePath.trim();
+
+  const clearActivityDraftSearchParam = useCallback(() => {
+    setSearchParams((currentParams) => {
+      const next = new URLSearchParams(currentParams);
+      next.delete('activityDraft');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   const updateWorkspaceSearchParam = useCallback((path: string | null) => {
     const next = new URLSearchParams(searchParams);
@@ -71,22 +80,55 @@ export function NewTaskPage() {
 
   useEffect(() => {
     if (!activityDraftId) return;
-    const draft = loadActivityTaskDraft(activityDraftId);
-    if (!draft) return;
-    let cancelled = false;
-    setIsApplyingActivityDraft(true);
-    setActivityCaptureMessage('Captured context loaded.');
 
-    if (draft.text?.trim()) {
-      setInput((current) => {
-        const text = draft.text?.trim() ?? '';
-        if (!current.trim()) return text;
-        if (current.includes(text)) return current;
-        return `${current.trimEnd()}\n\n${text}`;
-      });
+    function discardDraft() {
+      discardActivityTaskDraftOnPageUnload(activityDraftId);
     }
 
+    window.addEventListener('pagehide', discardDraft);
+    window.addEventListener('beforeunload', discardDraft);
+    return () => {
+      window.removeEventListener('pagehide', discardDraft);
+      window.removeEventListener('beforeunload', discardDraft);
+    };
+  }, [activityDraftId]);
+
+  useEffect(() => {
+    if (!activityDraftId) return;
+    let cancelled = false;
+    setIsApplyingActivityDraft(true);
+    setActivityCaptureMessage('Loading captured context...');
+
     void (async () => {
+      const localDraft = loadActivityTaskDraft(activityDraftId);
+      let draft = null;
+
+      try {
+        const result = await fetchActivityContext(activityDraftId);
+        draft = createActivityTaskDraft(result.context);
+      } catch {
+        draft = hasUsableActivityDraft(localDraft) ? localDraft : null;
+      }
+
+      if (cancelled) return;
+      if (!draft) {
+        setActivityCaptureMessage('Captured context was not available.');
+        clearActivityTaskDraft(activityDraftId);
+        void deleteActivityContext(activityDraftId).catch(() => undefined);
+        clearActivityDraftSearchParam();
+        setIsApplyingActivityDraft(false);
+        return;
+      }
+
+      const draftText = draft.text?.trim() ?? '';
+      if (draftText) {
+        setInput((current) => {
+          if (!current.trim()) return draftText;
+          if (current.includes(draftText)) return current;
+          return `${current.trimEnd()}\n\n${draftText}`;
+        });
+      }
+
       if (draft.imagePath || draft.imageBase64) {
         const file = await loadActivityScreenshot(
           draft.imagePath,
@@ -100,14 +142,20 @@ export function NewTaskPage() {
       }
 
       if (cancelled) return;
+      setActivityCaptureMessage(draftText ? 'Captured context loaded.' : 'Captured context loaded, but no transcript text was available.');
+      setTimeout(() => {
+        setActivityCaptureMessage((current) => current?.startsWith('Captured context') ? null : current);
+      }, 3000);
       clearActivityTaskDraft(draft.id);
+      void deleteActivityContext(draft.id).catch(() => undefined);
+      clearActivityDraftSearchParam();
       setIsApplyingActivityDraft(false);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [activityDraftId]);
+  }, [activityDraftId, clearActivityDraftSearchParam]);
 
   useEffect(() => {
     if (!requestedWorkspacePath) return;
@@ -150,10 +198,13 @@ export function NewTaskPage() {
         planModeEnabled ? 'plan' : 'direct',
         files,
         'task',
-        true,
+        shouldStartTask,
       );
       const task = created.task;
-      announceTaskCreated(`Task has been created and started in In Progress: ${task.title}`, task.id);
+      const announcement = shouldStartTask
+        ? `Task has been created and started in In Progress: ${task.title}`
+        : `Task has been created in Pending: ${task.title}`;
+      announceTaskCreated(announcement, task.id);
       if (normalizedWorkspacePath) {
         setCurrentProjectPath(normalizedWorkspacePath);
         void updateCurrentProject(normalizedWorkspacePath)
@@ -228,64 +279,16 @@ export function NewTaskPage() {
     });
   }, [input]);
 
-  const handleVoiceTaskIntent = useCallback(async (audio: Blob) => {
-    if (isCreating || (!defaults && isLoading)) return;
-
-    primeTaskCreatedSound();
-    primeTaskCreatedNotifications();
-    setIsCreating(true);
-    setWorkspaceError(null);
-    setVoiceError(null);
-    setVoiceIntentMessage('Deciding whether to start a task...');
-
-    try {
-      const result = await transcribeTaskIntentAudio(audio, {
-        workspacePath: normalizedWorkspacePath || null,
-        runtime,
-        model,
-        reasoningEffort,
-        taskMode: planModeEnabled ? 'plan' : 'direct',
-      });
-
-      if (result.actionTaken === 'task_created_started' && result.task) {
-        const task = result.task;
-        announceTaskCreated(`Task has been created and started in In Progress: ${task.title}`, task.id);
-        if (normalizedWorkspacePath) {
-          setCurrentProjectPath(normalizedWorkspacePath);
-          void updateCurrentProject(normalizedWorkspacePath)
-            .then((current) => {
-              if (current.project) upsertProject(current.project);
-            })
-            .catch(console.error);
-        }
-        navigate(`/tasks/${task.id}`);
-        return;
-      }
-
-      if (result.transcript.text.trim()) {
-        handleVoiceTranscript(result.transcript.text);
-      }
-      setVoiceError(result.decision.reason || result.error || 'Review the transcript and submit manually.');
-    } catch (error) {
-      setVoiceError(toErrorMessage(error, 'Failed to process voice task'));
-    } finally {
-      setVoiceIntentMessage(null);
-      setIsCreating(false);
-    }
-  }, [
-    defaults,
-    handleVoiceTranscript,
-    isCreating,
-    isLoading,
-    model,
-    navigate,
-    normalizedWorkspacePath,
-    planModeEnabled,
-    reasoningEffort,
-    runtime,
-    setCurrentProjectPath,
-    upsertProject,
-  ]);
+  const handleCapturedText = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setInput((current) => {
+      if (current.includes(trimmed)) return current;
+      return current.trim() ? `${current.trimEnd()}\n\n${trimmed}` : trimmed;
+    });
+    setCaptureError(null);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 py-8">
@@ -356,13 +359,13 @@ export function NewTaskPage() {
                 disabled={isCreating}
                 inputText={input}
                 onCapture={(nextAttachments) => setAttachments((current) => [...current, ...nextAttachments])}
+                onTextCapture={handleCapturedText}
                 onStatus={setCaptureStatus}
                 onError={setCaptureError}
               />
               <VoiceInputButton
                 disabled={isCreating}
                 onTranscript={handleVoiceTranscript}
-                onAudio={handleVoiceTaskIntent}
                 onError={setVoiceError}
               />
               <button
@@ -446,13 +449,6 @@ export function NewTaskPage() {
               </p>
             </div>
           )}
-          {voiceIntentMessage && (
-            <div className="px-4 pb-3">
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                {voiceIntentMessage}
-              </p>
-            </div>
-          )}
         </div>
         <p className="text-xs text-zinc-400 dark:text-zinc-500 text-center mt-3">
           {planModeEnabled
@@ -508,6 +504,17 @@ function fileFromBase64(base64: string, name: string, mimeType = 'image/png'): F
   } catch {
     return null;
   }
+}
+
+function hasUsableActivityDraft(draft: ReturnType<typeof loadActivityTaskDraft>): draft is NonNullable<ReturnType<typeof loadActivityTaskDraft>> {
+  return Boolean(
+    draft
+    && (
+      draft.text?.trim()
+      || draft.imagePath?.trim()
+      || draft.imageBase64?.trim()
+    ),
+  );
 }
 
 function ensureImageExtension(name: string, mimeType: string): string {

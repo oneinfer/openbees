@@ -326,6 +326,7 @@ function parseActivityDecision(value: string | null): ActivityIntentDecision | n
     title: typeof parsed.title === 'string' ? parsed.title : '',
     taskDescription: typeof parsed.taskDescription === 'string' ? parsed.taskDescription : '',
     hasEnoughContext: parsed.hasEnoughContext === true,
+    screenContextRequired: parsed.screenContextRequired === true,
     reason: typeof parsed.reason === 'string' ? parsed.reason : '',
   };
 }

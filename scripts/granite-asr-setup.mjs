@@ -4,33 +4,41 @@ import { delimiter, join, resolve } from 'node:path';
 import { platform } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const QWEN_ASR_KEYS = [
-  'QWEN_ASR_ENABLED',
-  'QWEN_ASR_PYTHON',
-  'QWEN_ASR_MODEL',
-  'QWEN_ASR_DEVICE',
-  'QWEN_ASR_DTYPE',
-  'QWEN_ASR_MAX_AUDIO_MB',
+const GRANITE_ASR_KEYS = [
+  'GRANITE_ASR_ENABLED',
+  'GRANITE_ASR_PYTHON',
+  'GRANITE_ASR_MODEL',
+  'GRANITE_ASR_DEVICE',
+  'GRANITE_ASR_DTYPE',
+  'GRANITE_ASR_MAX_AUDIO_MB',
+];
+
+const DEFAULT_GRANITE_ASR_MODEL = 'ibm-granite/granite-4.0-1b-speech';
+const GRANITE_ASR_PACKAGES = [
+  'torch',
+  'torchaudio',
+  'soundfile',
+  'transformers>=4.52.1',
 ];
 
 function isWindows() {
   return platform() === 'win32';
 }
 
-function qwenVenvDir() {
-  return resolve(process.cwd(), '.venv-qwen-asr');
+function graniteVenvDir() {
+  return resolve(process.cwd(), '.venv-granite-asr');
 }
 
-function qwenVenvPython() {
+function graniteVenvPython() {
   return isWindows()
-    ? join(qwenVenvDir(), 'Scripts', 'python.exe')
-    : join(qwenVenvDir(), 'bin', 'python');
+    ? join(graniteVenvDir(), 'Scripts', 'python.exe')
+    : join(graniteVenvDir(), 'bin', 'python');
 }
 
-function qwenVenvBinDir() {
+function graniteVenvBinDir() {
   return isWindows()
-    ? join(qwenVenvDir(), 'Scripts')
-    : join(qwenVenvDir(), 'bin');
+    ? join(graniteVenvDir(), 'Scripts')
+    : join(graniteVenvDir(), 'bin');
 }
 
 function existingFile(path) {
@@ -54,7 +62,7 @@ function findExecutable(name) {
 }
 
 function bootstrapPython() {
-  const configured = process.env.QWEN_ASR_BOOTSTRAP_PYTHON?.trim();
+  const configured = (process.env.GRANITE_ASR_BOOTSTRAP_PYTHON ?? process.env.QWEN_ASR_BOOTSTRAP_PYTHON)?.trim();
   if (configured && existingFile(configured)) return configured;
 
   const hermesPython = process.env.HERMES_PYTHON?.trim();
@@ -78,22 +86,22 @@ function run(file, args, options = {}) {
 function setupEnv() {
   return {
     ...process.env,
-    ...qwenActivationEnv(),
+    ...graniteActivationEnv(),
     PIP_DISABLE_PIP_VERSION_CHECK: '1',
     PIP_NO_INPUT: '1',
     PYTHONNOUSERSITE: '1',
   };
 }
 
-function qwenActivationEnv() {
-  const binDir = qwenVenvBinDir();
+function graniteActivationEnv() {
+  const binDir = graniteVenvBinDir();
   const currentPath = process.env.PATH || process.env.Path || '';
   const entries = currentPath.split(delimiter).filter(Boolean);
   const alreadyPresent = entries.some((entry) => resolve(entry).toLowerCase() === resolve(binDir).toLowerCase());
   const path = alreadyPresent ? currentPath : [binDir, currentPath].filter(Boolean).join(delimiter);
 
   return {
-    VIRTUAL_ENV: qwenVenvDir(),
+    VIRTUAL_ENV: graniteVenvDir(),
     PATH: path,
     Path: path,
   };
@@ -121,19 +129,19 @@ function pipReady(python) {
 
 function ensurePip(python) {
   if (pipReady(python)) return;
-  console.log('[qwen-asr-setup] Bootstrapping pip in .venv-qwen-asr...');
+  console.log('[granite-asr-setup] Bootstrapping pip in .venv-granite-asr...');
   run(python, ['-m', 'ensurepip', '--upgrade']);
 }
 
-function installQwenAsr(python) {
+function installGraniteAsr(python) {
   ensurePip(python);
 
-  const attempts = Number(process.env.QWEN_ASR_INSTALL_ATTEMPTS || '3');
+  const attempts = Number(process.env.GRANITE_ASR_INSTALL_ATTEMPTS || process.env.QWEN_ASR_INSTALL_ATTEMPTS || '3');
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       const attemptLabel = attempts > 1 ? ` (${attempt}/${attempts})` : '';
-      console.log(`[qwen-asr-setup] Installing qwen-asr into .venv-qwen-asr${attemptLabel}...`);
+      console.log(`[granite-asr-setup] Installing Granite ASR dependencies into .venv-granite-asr${attemptLabel}...`);
       run(python, [
         '-m',
         'pip',
@@ -141,18 +149,18 @@ function installQwenAsr(python) {
         '--upgrade',
         '--upgrade-strategy',
         'only-if-needed',
-        'qwen-asr',
+        ...GRANITE_ASR_PACKAGES,
       ]);
       return;
     } catch (error) {
       lastError = error;
       if (attempt >= attempts) break;
-      console.warn(`[qwen-asr-setup] Install attempt ${attempt} failed; retrying in 5s.`);
+      console.warn(`[granite-asr-setup] Install attempt ${attempt} failed; retrying in 5s.`);
       sleep(5000);
     }
   }
 
-  throw lastError ?? new Error('qwen-asr install failed.');
+  throw lastError ?? new Error('Granite ASR dependency install failed.');
 }
 
 function patchEnvContent(content, values) {
@@ -168,7 +176,7 @@ function patchEnvContent(content, values) {
   });
 
   if (next.length > 0 && next.at(-1) !== '') next.push('');
-  for (const key of QWEN_ASR_KEYS) {
+  for (const key of GRANITE_ASR_KEYS) {
     if (!present.has(key)) next.push(`${key}=${values[key]}`);
   }
 
@@ -202,77 +210,77 @@ function ensureEnvFiles(values, { writeLocalEnv = true, writeExampleEnv = true, 
   if (writeLocalEnv) writeEnvFile(resolve(process.cwd(), '.env'), values);
 }
 
-export function ensureQwenAsrEnvironment(options = {}) {
+export function ensureGraniteAsrEnvironment(options = {}) {
   const {
     enabled: enabledOverride,
-    installIfMissing = process.env.BEES_SKIP_QWEN_ASR_INSTALL !== '1',
+    installIfMissing = process.env.BEES_SKIP_GRANITE_ASR_INSTALL !== '1' && process.env.BEES_SKIP_QWEN_ASR_INSTALL !== '1',
     writeLocalEnv = true,
     writeExampleEnv = true,
   } = options;
 
-  const python = qwenVenvPython();
+  const python = graniteVenvPython();
   const localEnv = parseEnvFile(resolve(process.cwd(), '.env'));
-  const configured = (key) => process.env[key]?.trim() || localEnv[key]?.trim();
+  const configured = (key, legacyKey = null) => process.env[key]?.trim() || localEnv[key]?.trim() || (legacyKey ? process.env[legacyKey]?.trim() || localEnv[legacyKey]?.trim() : '');
   const enabled = typeof enabledOverride === 'boolean'
     ? enabledOverride
-    : (configured('QWEN_ASR_ENABLED') || 'false').toLowerCase() === 'true';
+    : (configured('GRANITE_ASR_ENABLED', 'QWEN_ASR_ENABLED') || 'false').toLowerCase() === 'true';
   const values = {
-    QWEN_ASR_ENABLED: String(enabled),
-    QWEN_ASR_PYTHON: python,
-    QWEN_ASR_MODEL: configured('QWEN_ASR_MODEL') || 'Qwen/Qwen3-ASR-0.6B',
-    QWEN_ASR_DEVICE: configured('QWEN_ASR_DEVICE') || 'cpu',
-    QWEN_ASR_DTYPE: configured('QWEN_ASR_DTYPE') || 'float32',
-    QWEN_ASR_MAX_AUDIO_MB: configured('QWEN_ASR_MAX_AUDIO_MB') || '25',
+    GRANITE_ASR_ENABLED: String(enabled),
+    GRANITE_ASR_PYTHON: python,
+    GRANITE_ASR_MODEL: configured('GRANITE_ASR_MODEL') || DEFAULT_GRANITE_ASR_MODEL,
+    GRANITE_ASR_DEVICE: configured('GRANITE_ASR_DEVICE', 'QWEN_ASR_DEVICE') || 'cpu',
+    GRANITE_ASR_DTYPE: configured('GRANITE_ASR_DTYPE', 'QWEN_ASR_DTYPE') || 'float32',
+    GRANITE_ASR_MAX_AUDIO_MB: configured('GRANITE_ASR_MAX_AUDIO_MB', 'QWEN_ASR_MAX_AUDIO_MB') || '25',
   };
   const exampleValues = {
-    QWEN_ASR_ENABLED: String(enabled),
-    QWEN_ASR_PYTHON: python,
-    QWEN_ASR_MODEL: 'Qwen/Qwen3-ASR-0.6B',
-    QWEN_ASR_DEVICE: 'cpu',
-    QWEN_ASR_DTYPE: 'float32',
-    QWEN_ASR_MAX_AUDIO_MB: '25',
+    GRANITE_ASR_ENABLED: String(enabled),
+    GRANITE_ASR_PYTHON: python,
+    GRANITE_ASR_MODEL: DEFAULT_GRANITE_ASR_MODEL,
+    GRANITE_ASR_DEVICE: 'cpu',
+    GRANITE_ASR_DTYPE: 'float32',
+    GRANITE_ASR_MAX_AUDIO_MB: '25',
   };
 
   ensureEnvFiles(values, { writeLocalEnv, writeExampleEnv, exampleValues });
   for (const [key, value] of Object.entries(values)) process.env[key] = value;
 
   if (!enabled) {
-    console.log(`[qwen-asr-setup] QWEN_ASR_ENABLED=${values.QWEN_ASR_ENABLED}`);
-    console.log('[qwen-asr-setup] qwen-asr disabled');
-    return { python, installed: false, venvDir: qwenVenvDir(), binDir: qwenVenvBinDir() };
+    console.log(`[granite-asr-setup] GRANITE_ASR_ENABLED=${values.GRANITE_ASR_ENABLED}`);
+    console.log('[granite-asr-setup] Granite ASR disabled');
+    return { python, installed: false, venvDir: graniteVenvDir(), binDir: graniteVenvBinDir() };
   }
 
   if (!existsSync(python)) {
     if (!installIfMissing) {
-      console.warn('[qwen-asr-setup] Qwen ASR venv is missing and install is disabled.');
+      console.warn('[granite-asr-setup] Granite ASR venv is missing and install is disabled.');
     } else {
       const sourcePython = bootstrapPython();
       if (!sourcePython) {
-        throw new Error('No Python executable found for Qwen ASR setup. Install Python or set QWEN_ASR_BOOTSTRAP_PYTHON.');
+        throw new Error('No Python executable found for Granite ASR setup. Install Python or set GRANITE_ASR_BOOTSTRAP_PYTHON.');
       }
-      console.log(`[qwen-asr-setup] Creating ${qwenVenvDir()} with ${sourcePython}`);
-      run(sourcePython, ['-m', 'venv', qwenVenvDir()]);
+      console.log(`[granite-asr-setup] Creating ${graniteVenvDir()} with ${sourcePython}`);
+      run(sourcePython, ['-m', 'venv', graniteVenvDir()]);
     }
   }
 
-  if (existsSync(python) && !packageInstalled(python, 'qwen_asr')) {
+  if (existsSync(python) && !GRANITE_ASR_PACKAGES.every((packageName) => packageInstalled(python, packageName.split(/[<=>]/)[0]))) {
     if (!installIfMissing) {
-      console.warn('[qwen-asr-setup] qwen-asr is missing and install is disabled.');
+      console.warn('[granite-asr-setup] Granite ASR dependencies are missing and install is disabled.');
     } else {
-      installQwenAsr(python);
+      installGraniteAsr(python);
     }
   }
 
-  const installed = existsSync(python) && packageInstalled(python, 'qwen_asr');
-  console.log(`[qwen-asr-setup] QWEN_ASR_ENABLED=${values.QWEN_ASR_ENABLED}`);
-  console.log(`[qwen-asr-setup] QWEN_ASR_PYTHON=${values.QWEN_ASR_PYTHON}`);
-  console.log(`[qwen-asr-setup] qwen-asr ${installed ? 'ready' : 'not installed'}`);
+  const installed = existsSync(python) && GRANITE_ASR_PACKAGES.every((packageName) => packageInstalled(python, packageName.split(/[<=>]/)[0]));
+  console.log(`[granite-asr-setup] GRANITE_ASR_ENABLED=${values.GRANITE_ASR_ENABLED}`);
+  console.log(`[granite-asr-setup] GRANITE_ASR_PYTHON=${values.GRANITE_ASR_PYTHON}`);
+  console.log(`[granite-asr-setup] Granite ASR dependencies ${installed ? 'ready' : 'not installed'}`);
 
   if (!installed && installIfMissing) {
-    throw new Error('qwen-asr was not installed successfully.');
+    throw new Error('Granite ASR dependencies were not installed successfully.');
   }
 
-  return { python, installed, venvDir: qwenVenvDir(), binDir: qwenVenvBinDir() };
+  return { python, installed, venvDir: graniteVenvDir(), binDir: graniteVenvBinDir() };
 }
 
 function isMainModule() {
@@ -281,7 +289,7 @@ function isMainModule() {
 
 async function main() {
   const args = new Set(process.argv.slice(2));
-  ensureQwenAsrEnvironment({
+  ensureGraniteAsrEnvironment({
     enabled: !args.has('--disabled'),
     installIfMissing: !args.has('--no-install'),
     writeLocalEnv: !args.has('--no-env'),
@@ -293,7 +301,7 @@ if (isMainModule()) {
   try {
     await main();
   } catch (error) {
-    console.error(`[qwen-asr-setup] ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[granite-asr-setup] ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
 }

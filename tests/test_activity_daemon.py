@@ -4,14 +4,17 @@ import tempfile
 import threading
 import time
 import unittest
+import json
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from activity_daemon.capture import clamp_region_to_screen, find_highlight_bounds
 from activity_daemon.clipboard import ClipboardCollector
-from activity_daemon.config import ActivityConfig
-from activity_daemon.daemon import ActivityDaemon
+from activity_daemon.config import ActivityConfig, load_config
+from activity_daemon.daemon import ActivityDaemon, should_emit_voice_transcript
 from activity_daemon.input_events import InputEventCollector
-from activity_daemon.speech import OpenWakeWordDetector, SpeechArmController, command_after_wake_phrase, contains_wake_word, normalize_spoken_text
+from activity_daemon.speech import OpenWakeWordDetector, SpeechArmController, command_after_wake_phrase, command_like_spoken_input, confirmed_wake_spoken_input, contains_wake_word, meaningful_spoken_input, merge_spoken_input_prefix, normalize_spoken_text
 from activity_daemon.store import ActivityStore
 
 
@@ -48,11 +51,117 @@ class ActivityDaemonTests(unittest.TestCase):
         self.assertTrue(contains_wake_word("heavy kind of creative website like this"))
         self.assertTrue(contains_wake_word("happy can a creative website"))
         self.assertTrue(contains_wake_word("so we can create a website like this"))
+        self.assertTrue(contains_wake_word("rip"))
+        self.assertTrue(contains_wake_word("piece"))
         self.assertFalse(contains_wake_word("a b", match_mode="strict"))
+        self.assertFalse(contains_wake_word("rip", match_mode="strict"))
         self.assertFalse(contains_wake_word("abc"))
         self.assertEqual(command_after_wake_phrase("have we can create a website like this"), "can create a website like this")
         self.assertEqual(command_after_wake_phrase("happy can a creative website"), "can a creative website")
         self.assertEqual(command_after_wake_phrase("so we can create a website like this"), "can create a website like this")
+
+    def test_input_pending_never_emits_voice_transcript(self) -> None:
+        self.assertFalse(should_emit_voice_transcript("[input pending]"))
+        self.assertFalse(should_emit_voice_transcript("input pending"))
+        self.assertFalse(should_emit_voice_transcript(""))
+        self.assertFalse(should_emit_voice_transcript("how about you"))
+        self.assertFalse(should_emit_voice_transcript("random words"))
+        self.assertTrue(should_emit_voice_transcript("write a linear search algorithm"))
+        self.assertTrue(should_emit_voice_transcript("what is binary search"))
+
+    def test_legacy_wakeword_post_capture_default_is_shortened(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(json.dumps({"data_dir": temp_dir, "wakeword_post_capture_seconds": 2.0}), encoding="utf-8")
+
+            config = load_config(str(config_path))
+
+            self.assertEqual(config.wakeword_post_capture_seconds, 0.35)
+
+    def test_command_audio_timeouts_can_be_loaded_from_env(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            with patch.dict(
+                os.environ,
+                {
+                    "COMMAND_LISTEN_TIMEOUT_SECONDS": "8",
+                    "COMMAND_PHRASE_TIME_LIMIT_SECONDS": "45",
+                },
+            ):
+                config = load_config(str(config_path))
+
+            self.assertEqual(config.command_listen_timeout_seconds, 8)
+            self.assertEqual(config.command_phrase_time_limit_seconds, 45)
+
+    def test_noise_transcripts_do_not_become_commands(self) -> None:
+        self.assertEqual(meaningful_spoken_input("the."), "")
+        self.assertEqual(meaningful_spoken_input("okay."), "")
+        self.assertEqual(meaningful_spoken_input("oh."), "")
+        self.assertEqual(meaningful_spoken_input("i m"), "")
+        self.assertEqual(command_like_spoken_input("i m"), "")
+        self.assertEqual(command_like_spoken_input("random words"), "")
+        self.assertEqual(command_like_spoken_input("can you"), "")
+        self.assertEqual(command_like_spoken_input("can you write"), "")
+        self.assertEqual(command_like_spoken_input("write"), "")
+        self.assertEqual(command_like_spoken_input("yes i know that you do but"), "")
+        self.assertEqual(command_like_spoken_input("the binary search program"), "")
+        self.assertEqual(command_like_spoken_input("okay let s get it"), "")
+        self.assertEqual(command_like_spoken_input("create a task"), "create a task")
+        self.assertEqual(command_like_spoken_input("write a binary search program"), "write a binary search program")
+        self.assertEqual(command_like_spoken_input("open settings"), "open settings")
+        self.assertEqual(command_like_spoken_input("can you explain this"), "can you explain this")
+        self.assertEqual(command_after_wake_phrase("hey bee the."), "")
+        self.assertEqual(command_after_wake_phrase("hey bee can you"), "")
+        self.assertEqual(command_after_wake_phrase("hey bee i m"), "")
+        self.assertEqual(command_after_wake_phrase("hey bee okay let s get it"), "")
+        self.assertEqual(command_after_wake_phrase("hey bee create a task"), "create a task")
+        self.assertEqual(command_after_wake_phrase("hey bee can you explain this"), "can you explain this")
+        self.assertEqual(confirmed_wake_spoken_input("the binary search program"), "the binary search program")
+        self.assertEqual(confirmed_wake_spoken_input("write a binary search program"), "write a binary search program")
+        self.assertEqual(confirmed_wake_spoken_input("okay let s get it"), "")
+        self.assertEqual(
+            merge_spoken_input_prefix("can you write a", "the binary search program"),
+            "can you write a binary search program",
+        )
+        self.assertEqual(
+            merge_spoken_input_prefix("can you write a binary", "binary search program"),
+            "can you write a binary search program",
+        )
+
+    def test_wake_audio_ignores_non_command_transcripts_without_wake_phrase(self) -> None:
+        config = ActivityConfig()
+        controller = self.make_speech_controller(config)
+        controller._transcribe_audio = lambda _audio, *args, **kwargs: "the text is in english"  # type: ignore[method-assign]
+
+        self.assertEqual(controller._command_from_wake_audio(object()), "")
+
+    def test_wake_audio_accepts_command_starters_without_wake_phrase(self) -> None:
+        config = ActivityConfig()
+        controller = self.make_speech_controller(config)
+        controller._transcribe_audio = lambda _audio, *args, **kwargs: "write a program for binary search"  # type: ignore[method-assign]
+
+        self.assertEqual(controller._command_from_wake_audio(object()), "write a program for binary search")
+
+    def test_wake_audio_accepts_meaningful_text_after_explicit_wake_phrase(self) -> None:
+        config = ActivityConfig()
+        controller = self.make_speech_controller(config)
+        controller._transcribe_audio = lambda _audio, *args, **kwargs: "hey bee the binary search program"  # type: ignore[method-assign]
+
+        self.assertEqual(controller._command_from_wake_audio(object()), "the binary search program")
+
+    def test_wake_audio_command_check_does_not_save_debug_asr_input(self) -> None:
+        config = ActivityConfig()
+        controller = self.make_speech_controller(config)
+        calls: list[dict[str, object]] = []
+
+        def fake_transcribe(_audio, label="audio", *, save_debug=True):
+            calls.append({"label": label, "save_debug": save_debug})
+            return "write a program for binary search"
+
+        controller._transcribe_audio = fake_transcribe  # type: ignore[method-assign]
+
+        self.assertEqual(controller._command_from_wake_audio(object()), "write a program for binary search")
+        self.assertEqual(calls, [{"label": "wake_audio_command_check", "save_debug": False}])
 
     def test_openwakeword_detector_scores_padded_audio_chunks(self) -> None:
         class FakeModel:
@@ -89,6 +198,42 @@ class ActivityDaemonTests(unittest.TestCase):
             self.assertEqual(score, 0.7)
             self.assertTrue(fake_model.reset_called)
             self.assertEqual(fake_model.calls, 2)
+            self.assertEqual(fake_model.last_chunk_size, 8)
+
+    def test_openwakeword_detector_streaming_chunks_keep_model_context(self) -> None:
+        class FakeModel:
+            def __init__(self) -> None:
+                self.models = {"hey_bee": object()}
+                self.calls = 0
+                self.resets = 0
+
+            def reset(self) -> None:
+                self.resets += 1
+
+            def predict(self, chunk):
+                self.calls += 1
+                self.last_chunk_size = len(chunk)
+                return {"hey_bee": 0.7 if self.calls == 2 else 0.1}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "hey_bee.onnx"
+            model_path.write_bytes(b"model")
+            config = ActivityConfig()
+            config.wakeword_model_path = str(model_path)
+            config.wakeword_chunk_size = 8
+            config.wakeword_threshold = 0.5
+            fake_model = FakeModel()
+            detector = OpenWakeWordDetector(config, model_factory=lambda _path: fake_model)
+
+            first_detected, first_score = detector.predict_pcm16(b"\x01\x00" * 8)
+            second_detected, second_score = detector.predict_pcm16(b"\x01\x00" * 8)
+
+            self.assertFalse(first_detected)
+            self.assertEqual(first_score, 0.1)
+            self.assertTrue(second_detected)
+            self.assertEqual(second_score, 0.7)
+            self.assertEqual(fake_model.calls, 2)
+            self.assertEqual(fake_model.resets, 1)
             self.assertEqual(fake_model.last_chunk_size, 8)
 
     def test_speech_gate_uses_silero_vad_after_rms_filter(self) -> None:
@@ -175,6 +320,13 @@ class ActivityDaemonTests(unittest.TestCase):
         config.update({"vad_enabled": False})
 
         self.assertTrue(config.vad_enabled)
+
+    def test_speech_defaults_are_quiet_and_mic_friendly(self) -> None:
+        config = ActivityConfig()
+
+        self.assertFalse(config.debug_wake)
+        self.assertEqual(config.min_energy_threshold, 100)
+        self.assertEqual(config.min_wake_audio_rms, 80)
 
     def test_region_clamps_to_screen(self) -> None:
         screen = {"left": 0, "top": 0, "width": 100, "height": 80}
@@ -497,6 +649,136 @@ class ActivityDaemonTests(unittest.TestCase):
             self.assertEqual(captures[0]["include_full_screen"], True)
             self.assertEqual(captures[0]["include_cursor_crop"], False)
             self.assertEqual(captures[0]["include_selection_crop"], False)
+            self.assertFalse(daemon.get_capture_armed())
+
+    def test_resolved_standalone_spoken_input_waits_for_screenshot_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ActivityConfig(data_dir=temp_dir)
+            config.armed_timeout_seconds = 0.2
+            config.collectors.speech = False
+            config.collectors.mouse = False
+            config.collectors.active_window = False
+            daemon = ActivityDaemon(config)
+            captures: list[dict[str, object]] = []
+            events: list[dict[str, object]] = []
+
+            daemon.capture_snapshot = lambda **kwargs: captures.append(kwargs) or {}  # type: ignore[method-assign]
+            daemon._broadcast = lambda event: events.append(event)  # type: ignore[method-assign]
+
+            daemon.arm_next_selection("[input pending]", trigger="voice_wake", input_pending=True)
+            daemon.resolve_spoken_input("write a program for binary search")
+            daemon.stop_event.wait(0.5)
+
+            self.assertEqual(len(captures), 1)
+            self.assertEqual(captures[0]["trigger"], "voice_screenshot")
+            self.assertEqual(captures[0]["include_full_screen"], True)
+            self.assertEqual([event.get("trigger") for event in events].count("voice_transcript"), 0)
+            self.assertFalse(daemon.get_capture_armed())
+
+    def test_same_utterance_spoken_input_waits_for_screenshot_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ActivityConfig(data_dir=temp_dir)
+            config.armed_timeout_seconds = 0.2
+            config.collectors.speech = False
+            config.collectors.mouse = False
+            config.collectors.active_window = False
+            daemon = ActivityDaemon(config)
+            captures: list[dict[str, object]] = []
+            events: list[dict[str, object]] = []
+
+            daemon.capture_snapshot = lambda **kwargs: captures.append(kwargs) or {}  # type: ignore[method-assign]
+            daemon._broadcast = lambda event: events.append(event)  # type: ignore[method-assign]
+
+            daemon.arm_next_selection("write a program for binary search", trigger="voice_wake", input_pending=False)
+            daemon.stop_event.wait(0.5)
+
+            self.assertEqual(len(captures), 1)
+            self.assertEqual(captures[0]["trigger"], "voice_screenshot")
+            self.assertEqual(captures[0]["include_full_screen"], True)
+            self.assertEqual([event.get("trigger") for event in events].count("voice_transcript"), 0)
+            self.assertFalse(daemon.get_capture_armed())
+
+    def test_contextual_spoken_input_waits_for_screenshot_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ActivityConfig(data_dir=temp_dir)
+            config.armed_timeout_seconds = 0.2
+            config.collectors.speech = False
+            config.collectors.mouse = False
+            config.collectors.active_window = False
+            daemon = ActivityDaemon(config)
+            captures: list[dict[str, object]] = []
+            events: list[dict[str, object]] = []
+
+            daemon.capture_snapshot = lambda **kwargs: captures.append(kwargs) or {}  # type: ignore[method-assign]
+            daemon._broadcast = lambda event: events.append(event)  # type: ignore[method-assign]
+
+            daemon.arm_next_selection("[input pending]", trigger="voice_wake", input_pending=True)
+            daemon.resolve_spoken_input("summarize this")
+            daemon.stop_event.wait(0.5)
+
+            self.assertEqual(len(captures), 1)
+            self.assertEqual(captures[0]["trigger"], "voice_screenshot")
+            self.assertEqual(captures[0]["include_full_screen"], True)
+            self.assertEqual([event.get("trigger") for event in events].count("voice_transcript"), 0)
+            self.assertFalse(daemon.get_capture_armed())
+
+    def test_vague_spoken_input_waits_for_screenshot_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ActivityConfig(data_dir=temp_dir)
+            config.armed_timeout_seconds = 0.2
+            config.collectors.speech = False
+            config.collectors.mouse = False
+            config.collectors.active_window = False
+            daemon = ActivityDaemon(config)
+            captures: list[dict[str, object]] = []
+            events: list[dict[str, object]] = []
+
+            daemon.capture_snapshot = lambda **kwargs: captures.append(kwargs) or {}  # type: ignore[method-assign]
+            daemon._broadcast = lambda event: events.append(event)  # type: ignore[method-assign]
+
+            daemon.arm_next_selection("[input pending]", trigger="voice_wake", input_pending=True)
+            daemon.resolve_spoken_input("how about you")
+            daemon.stop_event.wait(0.5)
+
+            self.assertEqual(len(captures), 1)
+            self.assertEqual(captures[0]["trigger"], "voice_screenshot")
+            self.assertEqual(captures[0]["include_full_screen"], True)
+            self.assertEqual([event.get("trigger") for event in events].count("voice_transcript"), 0)
+            self.assertFalse(daemon.get_capture_armed())
+
+    def test_armed_timeout_captures_screenshot_while_spoken_input_is_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ActivityConfig(data_dir=temp_dir)
+            config.armed_timeout_seconds = 0.2
+            config.collectors.speech = False
+            config.collectors.mouse = False
+            daemon = ActivityDaemon(config)
+            captures: list[dict[str, object]] = []
+
+            def fake_capture_snapshot(**kwargs):
+                captures.append({
+                    **kwargs,
+                    "spoken_input": daemon.last_spoken_input,
+                })
+                return {
+                    "id": "event-1",
+                    "files": {"event_json": "event.json"},
+                    "text": {"selection_text": ""},
+                }
+
+            daemon.capture_snapshot = fake_capture_snapshot  # type: ignore[method-assign]
+            daemon.arm_next_selection("[input pending]", trigger="voice_wake", input_pending=True)
+            daemon.stop_event.wait(0.35)
+            self.assertEqual(len(captures), 1)
+            self.assertEqual(captures[0]["trigger"], "voice_screenshot")
+            self.assertEqual(captures[0]["include_full_screen"], True)
+            self.assertGreater(captures[0]["wait_for_spoken_input_before_publish_seconds"], 0)
+            self.assertEqual(captures[0]["spoken_input"], "[input pending]")
+
+            daemon.resolve_spoken_input("can you explain this")
+            daemon.stop_event.wait(0.3)
+
+            self.assertEqual(len(captures), 1)
             self.assertFalse(daemon.get_capture_armed())
 
     def test_hover_candidate_fires_after_mouse_is_still(self) -> None:

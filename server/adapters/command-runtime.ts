@@ -1235,6 +1235,7 @@ export class CommandRuntimeAdapter implements AgentAdapter {
         title: 'Saved voice context',
         taskDescription: '',
         hasEnoughContext: false,
+        screenContextRequired: false,
         reason: 'Spoken input and captured context are empty.',
       };
     }
