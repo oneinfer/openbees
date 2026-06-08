@@ -522,12 +522,16 @@ class ActivityDaemon:
         event_id = str(uuid.uuid4())
         event_time = datetime.now(timezone.utc)
         artifact_dir = self._artifact_dir(event_time, event_id)
+        event_id = str(uuid.uuid4())
+        event_time = datetime.now(timezone.utc)
+        artifact_dir = self._artifact_dir(event_time, event_id)
         images_dir = artifact_dir / "images"
         event_json_path = artifact_dir / "event.json"
         artifact_dir.mkdir(parents=True, exist_ok=True)
         images_dir.mkdir(parents=True, exist_ok=True)
 
         mouse_position = drag_end or self.input_events.current_position()
+        recent_path = self.input_events.recent_path()
         include_base64 = self.config.include_base64_by_default if include_base64 is None else include_base64
 
         privacy: dict[str, Any] = {"local_only": True, "remote_send": False, "captured": {}, "unavailable": {}}
@@ -545,6 +549,7 @@ class ActivityDaemon:
                     include_cursor_crop,
                     include_selection_crop,
                     images_dir,
+                    recent_path=recent_path,
                 )
                 privacy["captured"]["images"] = True
             except Exception as error:
@@ -605,7 +610,7 @@ class ActivityDaemon:
                 "current_position": {"x": mouse_position[0], "y": mouse_position[1]} if mouse_position else None,
                 "drag_start": {"x": drag_start[0], "y": drag_start[1]} if drag_start else None,
                 "drag_end": {"x": drag_end[0], "y": drag_end[1]} if drag_end else None,
-                "recent_path": self.input_events.recent_path(),
+                "recent_path": recent_path,
             },
             "text": {
                 "clipboard_text": clipboard_snapshot.get("clipboard_text", ""),

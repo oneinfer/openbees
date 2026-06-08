@@ -215,6 +215,7 @@ export function transcribeTaskIntentAudio(
     model?: string | null;
     reasoningEffort?: ReasoningEffort | null;
     taskMode?: TaskMode;
+    start?: boolean;
   } = {},
 ) {
   const formData = new FormData();
@@ -226,6 +227,7 @@ export function transcribeTaskIntentAudio(
   appendOptionalFormValue(formData, 'model', options.model);
   appendOptionalFormValue(formData, 'reasoningEffort', options.reasoningEffort);
   appendOptionalFormValue(formData, 'taskMode', options.taskMode);
+  if (options.start !== undefined) formData.append('start', String(options.start));
 
   return request<AsrTaskIntentResponse>('/asr/transcribe-task-intent', {
     method: 'POST',

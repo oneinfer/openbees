@@ -138,15 +138,39 @@ class ScreenCapture:
         except Exception as error:
             return {"enabled": True, "available": False, "permission_required": False, "last_error": str(error)}
 
-    def _save_screenshot(self, sct: Any, region: dict[str, int], prefix: str, output_dir: Path | None = None) -> dict[str, Any]:
+    def _save_screenshot(self, sct: Any, region: dict[str, int], prefix: str, output_dir: Path | None = None, draw_path: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         from mss.tools import to_png
+        from PIL import Image, ImageDraw
 
         image_dir = output_dir or self.images_dir
         image_dir.mkdir(parents=True, exist_ok=True)
         screenshot = sct.grab(region)
         timestamp = int(time.time() * 1000)
         path = image_dir / f"{prefix}_{timestamp}.png"
-        to_png(screenshot.rgb, screenshot.size, output=str(path))
+
+        if draw_path and len(draw_path) > 1:
+            img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+            draw = ImageDraw.Draw(img, "RGBA")
+            
+            points = []
+            for point in draw_path:
+                x = point["x"] - region["left"]
+                y = point["y"] - region["top"]
+                points.append((x, y))
+            
+            # Draw line with semi-transparent red color
+            draw.line(points, fill=(255, 0, 0, 180), width=6, joint="curve")
+            
+            # Draw a circle at the last position (cursor)
+            if points:
+                last_x, last_y = points[-1]
+                radius = 6
+                draw.ellipse([last_x - radius, last_y - radius, last_x + radius, last_y + radius], fill=(255, 0, 0, 200))
+
+            img.save(str(path))
+        else:
+            to_png(screenshot.rgb, screenshot.size, output=str(path))
+
         print(
             f"[activity-daemon] saved screenshot image: prefix={prefix}, path={path}, size={screenshot.size[0]}x{screenshot.size[1]}",
             flush=True,
@@ -163,6 +187,7 @@ class ScreenCapture:
         include_cursor_crop: bool = True,
         include_selection_crop: bool = True,
         output_dir: Path | None = None,
+        recent_path: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         import mss
 
@@ -170,7 +195,7 @@ class ScreenCapture:
         with mss.MSS() as sct:
             screen = sct.monitors[0]
             if include_full_screen:
-                images["screenshot"] = self._save_screenshot(sct, screen, "screenshot", output_dir)
+                images["screenshot"] = self._save_screenshot(sct, screen, "screenshot", output_dir, draw_path=recent_path)
 
             if include_cursor_crop and mouse_position:
                 cursor_region = get_cursor_region(mouse_position, self.cursor_crop_size, screen)

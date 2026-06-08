@@ -36,7 +36,7 @@ export function Column({
   const navigate = useNavigate();
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const showAddButton = status === 'pending' || status === 'in_progress';
-  const createTaskPath = status === 'in_progress' ? '/tasks/new?status=in_progress' : '/tasks/new';
+  const createTaskPath = `/tasks/new?status=${status}`;
   const showFlushButton = status === 'pending';
   const showPullRequestButton = status === 'in_review';
 

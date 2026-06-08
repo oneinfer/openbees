@@ -23,34 +23,55 @@ export function useAgentConfig(taskId?: string, initialSettings?: AgentRunSettin
 
   useEffect(() => {
     let cancelled = false;
-    setIsLoading(true);
-    Promise.allSettled([
-      taskId ? fetchTaskAgentSettings(taskId) : fetchAgentDefaults(),
-      fetchAgentRuntimes(),
-    ]).then(([settingsResult, runtimesResult]) => {
-      if (cancelled) return;
-      if (settingsResult.status === 'fulfilled') {
-        const val = settingsResult.value;
-        if ('task' in val) {
-          writeCachedAgentDefaults(val.defaults);
-          setDefaults(val.defaults);
-          setRuntime(val.task.runtime ?? initialRef.current?.runtime ?? null);
-          setModel(val.task.model ?? initialRef.current?.model ?? null);
-          setReasoningEffort(val.task.reasoningEffort ?? initialRef.current?.reasoningEffort ?? null);
-          setRuntimeOptions(val.runtimes.options);
+    let timeoutId: number | null = null;
+
+    function loadConfig() {
+      setIsLoading(true);
+      Promise.allSettled([
+        taskId ? fetchTaskAgentSettings(taskId) : fetchAgentDefaults(),
+        fetchAgentRuntimes(),
+      ]).then(([settingsResult, runtimesResult]) => {
+        if (cancelled) return;
+        
+        let allSucceeded = true;
+        if (settingsResult.status === 'fulfilled') {
+          const val = settingsResult.value;
+          if ('task' in val) {
+            writeCachedAgentDefaults(val.defaults);
+            setDefaults(val.defaults);
+            setRuntime(val.task.runtime ?? initialRef.current?.runtime ?? null);
+            setModel(val.task.model ?? initialRef.current?.model ?? null);
+            setReasoningEffort(val.task.reasoningEffort ?? initialRef.current?.reasoningEffort ?? null);
+            setRuntimeOptions(val.runtimes.options);
+          } else {
+            writeCachedAgentDefaults(val);
+            setDefaults(val);
+            setRuntime(initialRef.current?.runtime ?? val.runtime ?? null);
+          }
         } else {
-          writeCachedAgentDefaults(val);
-          setDefaults(val);
-          setRuntime(initialRef.current?.runtime ?? val.runtime ?? null);
+          allSucceeded = false;
         }
-      }
-      if (runtimesResult.status === 'fulfilled') {
-        setRuntimeOptions(runtimesResult.value.options);
-      }
-    }).finally(() => {
-      if (!cancelled) setIsLoading(false);
-    });
-    return () => { cancelled = true; };
+
+        if (runtimesResult.status === 'fulfilled') {
+          setRuntimeOptions(runtimesResult.value.options);
+        } else {
+          allSucceeded = false;
+        }
+
+        if (allSucceeded) {
+          setIsLoading(false);
+        } else {
+          timeoutId = window.setTimeout(loadConfig, 2000);
+        }
+      });
+    }
+
+    loadConfig();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, [taskId]);
 
   const effectiveRuntime = runtime ?? defaults?.runtime ?? 'hermes';
@@ -68,18 +89,29 @@ export function useAgentConfig(taskId?: string, initialSettings?: AgentRunSettin
 
   useEffect(() => {
     let cancelled = false;
-    fetchAgentModels(effectiveRuntime)
-      .then((result) => {
-        if (cancelled) return;
-        setModelGroups(result.groups);
-        setRuntimeDefaultModel(result.defaultModel);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setModelGroups([]);
-        setRuntimeDefaultModel(null);
-      });
-    return () => { cancelled = true; };
+    let timeoutId: number | null = null;
+
+    function loadModels() {
+      fetchAgentModels(effectiveRuntime)
+        .then((result) => {
+          if (cancelled) return;
+          setModelGroups(result.groups);
+          setRuntimeDefaultModel(result.defaultModel);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setModelGroups([]);
+          setRuntimeDefaultModel(null);
+          timeoutId = window.setTimeout(loadModels, 2000);
+        });
+    }
+
+    loadModels();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, [effectiveRuntime]);
 
   useEffect(() => {

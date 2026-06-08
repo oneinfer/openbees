@@ -103,11 +103,13 @@ class InputEventCollector:
             self._hover_thread.join(timeout=1)
 
     def record_position(self, x: int, y: int) -> None:
-        point = {"x": int(x), "y": int(y), "timestamp": time.time()}
+        now_ts = time.time()
+        now_mono = time.monotonic()
         with self._lock:
             self._position = (int(x), int(y))
-            self._last_move_at = time.monotonic()
-            self._path.append(point)
+            self._last_move_at = now_mono
+            if not self._path or (now_ts - self._path[-1]["timestamp"]) >= 0.05:
+                self._path.append({"x": int(x), "y": int(y), "timestamp": now_ts})
 
     def current_position(self) -> tuple[int, int] | None:
         with self._lock:

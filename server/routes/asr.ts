@@ -118,6 +118,17 @@ function parseTaskMode(value: unknown): TaskMode {
   return value as TaskMode;
 }
 
+function parseBooleanFlag(value: unknown, fieldName: string, defaultValue = false): boolean {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') throw new Error(`${fieldName} must be a boolean`);
+
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  throw new Error(`${fieldName} must be a boolean`);
+}
+
 function noCreateDecision(reason: string, transcript = ''): ActivityIntentDecision {
   return {
     action: 'save_context',
@@ -200,11 +211,15 @@ router.post('/transcribe-task-intent', audioUploadMiddleware, async (req, res) =
     let requestedRuntime: ReturnType<typeof parseRuntimeValue>;
     let workspacePath: string | null;
     let taskMode: TaskMode;
+    let shouldStart = true;
     try {
       runSettings = parseRunSettingsBody(req.body);
       requestedRuntime = parseRuntimeValue(req.body.runtime);
       workspacePath = parseWorkspacePath(req.body) ?? null;
       taskMode = parseTaskMode(req.body.taskMode ?? req.body.task_mode);
+      if (req.body.start !== undefined) {
+        shouldStart = parseBooleanFlag(req.body.start, 'start', true);
+      }
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid voice task settings' });
     }
@@ -249,17 +264,19 @@ router.post('/transcribe-task-intent', audioUploadMiddleware, async (req, res) =
       reasoningEffort,
     });
 
-    try {
-      task = startTaskImmediately(task);
-    } catch (error) {
-      const reverted = updateTask(task.id, { status: 'pending' }) ?? task;
-      notifyTaskCreated(reverted);
-      broadcast({ type: 'task_created', task: reverted });
-      const message = toErrorMessage(error, 'Task was created but could not be activated');
-      return res.status(409).json({
-        ...insertForEditResponse(transcript, message, decision, message),
-        task: reverted,
-      });
+    if (shouldStart) {
+      try {
+        task = startTaskImmediately(task);
+      } catch (error) {
+        const reverted = updateTask(task.id, { status: 'pending' }) ?? task;
+        notifyTaskCreated(reverted);
+        broadcast({ type: 'task_created', task: reverted });
+        const message = toErrorMessage(error, 'Task was created but could not be activated');
+        return res.status(409).json({
+          ...insertForEditResponse(transcript, message, decision, message),
+          task: reverted,
+        });
+      }
     }
 
     if (workspacePath) {
@@ -273,7 +290,7 @@ router.post('/transcribe-task-intent', audioUploadMiddleware, async (req, res) =
     res.status(201).json({
       transcript,
       decision,
-      actionTaken: 'task_created_started',
+      actionTaken: shouldStart ? 'task_created_started' : 'task_created',
       task,
     } satisfies AsrTaskIntentResponse);
   } catch (error) {

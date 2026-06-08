@@ -232,7 +232,7 @@ export interface AsrTranscriptionResponse {
 export interface AsrTaskIntentResponse {
   transcript: AsrTranscriptionResponse;
   decision: ActivityIntentDecision;
-  actionTaken: 'task_created_started' | 'insert_for_edit';
+  actionTaken: 'task_created' | 'task_created_started' | 'insert_for_edit';
   task?: Task;
   error?: string;
 }

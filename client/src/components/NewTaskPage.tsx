@@ -11,7 +11,7 @@ import {
   type ComposerAttachment,
 } from './AttachmentPicker';
 import { ActivityCaptureButton } from './ActivityCaptureButton';
-import { createTask, deleteActivityContext, fetchActivityContext, pickWorkspaceDirectory, transcribeTaskIntentAudio, updateCurrentProject } from '../lib/api';
+import { createTask, deleteActivityContext, fetchActivityContext, pickWorkspaceDirectory, updateCurrentProject } from '../lib/api';
 import { clearActivityTaskDraft, createActivityTaskDraft, discardActivityTaskDraftOnPageUnload, loadActivityTaskDraft } from '../lib/activityDraft';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { isEditableTarget, handleChatKeyDown } from '../lib/keyboard';
@@ -23,6 +23,8 @@ export function NewTaskPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedWorkspacePath = searchParams.get('workspacePath')?.trim() ?? '';
+  const requestedStatus = searchParams.get('status');
+  const shouldStartTask = requestedStatus !== 'pending';
   const activityDraftId = searchParams.get('activityDraft');
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
@@ -35,7 +37,6 @@ export function NewTaskPage() {
   const [isPickingWorkspace, setIsPickingWorkspace] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [voiceIntentMessage, setVoiceIntentMessage] = useState<string | null>(null);
   const [captureStatus, setCaptureStatus] = useState<string | null>(null);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [isApplyingActivityDraft, setIsApplyingActivityDraft] = useState(false);
@@ -142,6 +143,9 @@ export function NewTaskPage() {
 
       if (cancelled) return;
       setActivityCaptureMessage(draftText ? 'Captured context loaded.' : 'Captured context loaded, but no transcript text was available.');
+      setTimeout(() => {
+        setActivityCaptureMessage((current) => current?.startsWith('Captured context') ? null : current);
+      }, 3000);
       clearActivityTaskDraft(draft.id);
       void deleteActivityContext(draft.id).catch(() => undefined);
       clearActivityDraftSearchParam();
@@ -194,10 +198,13 @@ export function NewTaskPage() {
         planModeEnabled ? 'plan' : 'direct',
         files,
         'task',
-        true,
+        shouldStartTask,
       );
       const task = created.task;
-      announceTaskCreated(`Task has been created and started in In Progress: ${task.title}`, task.id);
+      const announcement = shouldStartTask
+        ? `Task has been created and started in In Progress: ${task.title}`
+        : `Task has been created in Pending: ${task.title}`;
+      announceTaskCreated(announcement, task.id);
       if (normalizedWorkspacePath) {
         setCurrentProjectPath(normalizedWorkspacePath);
         void updateCurrentProject(normalizedWorkspacePath)
@@ -283,65 +290,6 @@ export function NewTaskPage() {
     requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
 
-  const handleVoiceTaskIntent = useCallback(async (audio: Blob) => {
-    if (isCreating || (!defaults && isLoading)) return;
-
-    primeTaskCreatedSound();
-    primeTaskCreatedNotifications();
-    setIsCreating(true);
-    setWorkspaceError(null);
-    setVoiceError(null);
-    setVoiceIntentMessage('Deciding whether to start a task...');
-
-    try {
-      const result = await transcribeTaskIntentAudio(audio, {
-        workspacePath: normalizedWorkspacePath || null,
-        runtime,
-        model,
-        reasoningEffort,
-        taskMode: planModeEnabled ? 'plan' : 'direct',
-      });
-
-      if (result.actionTaken === 'task_created_started' && result.task) {
-        const task = result.task;
-        announceTaskCreated(`Task has been created and started in In Progress: ${task.title}`, task.id);
-        if (normalizedWorkspacePath) {
-          setCurrentProjectPath(normalizedWorkspacePath);
-          void updateCurrentProject(normalizedWorkspacePath)
-            .then((current) => {
-              if (current.project) upsertProject(current.project);
-            })
-            .catch(console.error);
-        }
-        navigate(`/tasks/${task.id}`);
-        return;
-      }
-
-      if (result.transcript.text.trim()) {
-        handleVoiceTranscript(result.transcript.text);
-      }
-      setVoiceError(result.decision.reason || result.error || 'Review the transcript and submit manually.');
-    } catch (error) {
-      setVoiceError(toErrorMessage(error, 'Failed to process voice task'));
-    } finally {
-      setVoiceIntentMessage(null);
-      setIsCreating(false);
-    }
-  }, [
-    defaults,
-    handleVoiceTranscript,
-    isCreating,
-    isLoading,
-    model,
-    navigate,
-    normalizedWorkspacePath,
-    planModeEnabled,
-    reasoningEffort,
-    runtime,
-    setCurrentProjectPath,
-    upsertProject,
-  ]);
-
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 py-8">
       <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100 mb-6">
@@ -418,7 +366,6 @@ export function NewTaskPage() {
               <VoiceInputButton
                 disabled={isCreating}
                 onTranscript={handleVoiceTranscript}
-                onAudio={handleVoiceTaskIntent}
                 onError={setVoiceError}
               />
               <button
@@ -499,13 +446,6 @@ export function NewTaskPage() {
             <div className="px-4 pb-3">
               <p className="text-xs text-zinc-500 dark:text-zinc-400">
                 {captureStatus}
-              </p>
-            </div>
-          )}
-          {voiceIntentMessage && (
-            <div className="px-4 pb-3">
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                {voiceIntentMessage}
               </p>
             </div>
           )}
