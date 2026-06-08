@@ -11,7 +11,7 @@
     "preinstall": "node scripts/check-runtime.mjs",
     "postinstall": "node scripts/activity-daemon-setup.mjs",
     "setup:hermes": "node scripts/hermes-setup.mjs",
-    "setup:asr": "node scripts/qwen-asr-setup.mjs",
+    "setup:asr": "node scripts/granite-asr-setup.mjs",
     "setup:activity": "node scripts/activity-daemon-setup.mjs",
     "dev": "node --import tsx scripts/dev.mjs",
     "dev:server": "node --import tsx scripts/dev.mjs",

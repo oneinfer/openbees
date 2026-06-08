@@ -4,6 +4,7 @@ dist/
 *.tsbuildinfo
 .vscode/
 .venv-qwen-asr/
+.venv-granite-asr/
 tmp-dev-server*.log
 
 __pycache__/

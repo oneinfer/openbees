@@ -9,6 +9,7 @@ interface ActivityCaptureButtonProps {
   disabled?: boolean;
   inputText?: string;
   onCapture: (attachments: ComposerAttachment[]) => void;
+  onTextCapture?: (text: string) => void;
   onStatus?: (message: string | null) => void;
   onError?: (message: string | null) => void;
 }
@@ -19,6 +20,7 @@ export function ActivityCaptureButton({
   disabled = false,
   inputText = '',
   onCapture,
+  onTextCapture,
   onStatus,
   onError,
 }: ActivityCaptureButtonProps) {
@@ -86,8 +88,10 @@ export function ActivityCaptureButton({
     const file = await fileFromCaptureEvent(event, fallbackName);
     if (!file) throw new Error('The activity daemon did not return a screenshot image.');
     onCapture(createComposerAttachments([file]));
+    const capturedText = textFromCaptureEvent(event);
+    if (capturedText) onTextCapture?.(capturedText);
     onError?.(null);
-  }, [onCapture, onError]);
+  }, [onCapture, onError, onTextCapture]);
 
   const handleScreenshot = useCallback(async () => {
     if (disabled || busyAction) return;
@@ -257,6 +261,13 @@ function imageFromCaptureEvent(event: Record<string, unknown>): { path?: string;
   }
 
   return null;
+}
+
+function textFromCaptureEvent(event: Record<string, unknown>): string {
+  const text = recordValue(event.text);
+  const selection = typeof text?.selection_text === 'string' ? text.selection_text.trim() : '';
+  if (selection) return `Selected text from capture:\n${selection}`;
+  return '';
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {

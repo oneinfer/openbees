@@ -127,6 +127,7 @@ export interface ActivityIntentDecision {
   title: string;
   taskDescription: string;
   hasEnoughContext: boolean;
+  screenContextRequired: boolean;
   reason: string;
 }
 

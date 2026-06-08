@@ -11,8 +11,8 @@ import {
   type ComposerAttachment,
 } from './AttachmentPicker';
 import { ActivityCaptureButton } from './ActivityCaptureButton';
-import { createTask, pickWorkspaceDirectory, transcribeTaskIntentAudio, updateCurrentProject } from '../lib/api';
-import { clearActivityTaskDraft, loadActivityTaskDraft } from '../lib/activityDraft';
+import { createTask, deleteActivityContext, fetchActivityContext, pickWorkspaceDirectory, transcribeTaskIntentAudio, updateCurrentProject } from '../lib/api';
+import { clearActivityTaskDraft, createActivityTaskDraft, discardActivityTaskDraftOnPageUnload, loadActivityTaskDraft } from '../lib/activityDraft';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { isEditableTarget, handleChatKeyDown } from '../lib/keyboard';
 import { toErrorMessage } from '../lib/format';
@@ -48,6 +48,14 @@ export function NewTaskPage() {
   const workspaceEditedRef = useRef(false);
   const normalizedWorkspacePath = workspacePath.trim();
 
+  const clearActivityDraftSearchParam = useCallback(() => {
+    setSearchParams((currentParams) => {
+      const next = new URLSearchParams(currentParams);
+      next.delete('activityDraft');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   const updateWorkspaceSearchParam = useCallback((path: string | null) => {
     const next = new URLSearchParams(searchParams);
     if (path?.trim()) next.set('workspacePath', path.trim());
@@ -71,22 +79,55 @@ export function NewTaskPage() {
 
   useEffect(() => {
     if (!activityDraftId) return;
-    const draft = loadActivityTaskDraft(activityDraftId);
-    if (!draft) return;
-    let cancelled = false;
-    setIsApplyingActivityDraft(true);
-    setActivityCaptureMessage('Captured context loaded.');
 
-    if (draft.text?.trim()) {
-      setInput((current) => {
-        const text = draft.text?.trim() ?? '';
-        if (!current.trim()) return text;
-        if (current.includes(text)) return current;
-        return `${current.trimEnd()}\n\n${text}`;
-      });
+    function discardDraft() {
+      discardActivityTaskDraftOnPageUnload(activityDraftId);
     }
 
+    window.addEventListener('pagehide', discardDraft);
+    window.addEventListener('beforeunload', discardDraft);
+    return () => {
+      window.removeEventListener('pagehide', discardDraft);
+      window.removeEventListener('beforeunload', discardDraft);
+    };
+  }, [activityDraftId]);
+
+  useEffect(() => {
+    if (!activityDraftId) return;
+    let cancelled = false;
+    setIsApplyingActivityDraft(true);
+    setActivityCaptureMessage('Loading captured context...');
+
     void (async () => {
+      const localDraft = loadActivityTaskDraft(activityDraftId);
+      let draft = null;
+
+      try {
+        const result = await fetchActivityContext(activityDraftId);
+        draft = createActivityTaskDraft(result.context);
+      } catch {
+        draft = hasUsableActivityDraft(localDraft) ? localDraft : null;
+      }
+
+      if (cancelled) return;
+      if (!draft) {
+        setActivityCaptureMessage('Captured context was not available.');
+        clearActivityTaskDraft(activityDraftId);
+        void deleteActivityContext(activityDraftId).catch(() => undefined);
+        clearActivityDraftSearchParam();
+        setIsApplyingActivityDraft(false);
+        return;
+      }
+
+      const draftText = draft.text?.trim() ?? '';
+      if (draftText) {
+        setInput((current) => {
+          if (!current.trim()) return draftText;
+          if (current.includes(draftText)) return current;
+          return `${current.trimEnd()}\n\n${draftText}`;
+        });
+      }
+
       if (draft.imagePath || draft.imageBase64) {
         const file = await loadActivityScreenshot(
           draft.imagePath,
@@ -100,14 +141,17 @@ export function NewTaskPage() {
       }
 
       if (cancelled) return;
+      setActivityCaptureMessage(draftText ? 'Captured context loaded.' : 'Captured context loaded, but no transcript text was available.');
       clearActivityTaskDraft(draft.id);
+      void deleteActivityContext(draft.id).catch(() => undefined);
+      clearActivityDraftSearchParam();
       setIsApplyingActivityDraft(false);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [activityDraftId]);
+  }, [activityDraftId, clearActivityDraftSearchParam]);
 
   useEffect(() => {
     if (!requestedWorkspacePath) return;
@@ -227,6 +271,17 @@ export function NewTaskPage() {
       inputRef.current?.setSelectionRange(cursor, cursor);
     });
   }, [input]);
+
+  const handleCapturedText = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setInput((current) => {
+      if (current.includes(trimmed)) return current;
+      return current.trim() ? `${current.trimEnd()}\n\n${trimmed}` : trimmed;
+    });
+    setCaptureError(null);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
 
   const handleVoiceTaskIntent = useCallback(async (audio: Blob) => {
     if (isCreating || (!defaults && isLoading)) return;
@@ -356,6 +411,7 @@ export function NewTaskPage() {
                 disabled={isCreating}
                 inputText={input}
                 onCapture={(nextAttachments) => setAttachments((current) => [...current, ...nextAttachments])}
+                onTextCapture={handleCapturedText}
                 onStatus={setCaptureStatus}
                 onError={setCaptureError}
               />
@@ -508,6 +564,17 @@ function fileFromBase64(base64: string, name: string, mimeType = 'image/png'): F
   } catch {
     return null;
   }
+}
+
+function hasUsableActivityDraft(draft: ReturnType<typeof loadActivityTaskDraft>): draft is NonNullable<ReturnType<typeof loadActivityTaskDraft>> {
+  return Boolean(
+    draft
+    && (
+      draft.text?.trim()
+      || draft.imagePath?.trim()
+      || draft.imageBase64?.trim()
+    ),
+  );
 }
 
 function ensureImageExtension(name: string, mimeType: string): string {

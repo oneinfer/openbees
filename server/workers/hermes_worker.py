@@ -1548,6 +1548,7 @@ def _normalize_activity_intent_decision(parsed: dict[str, Any], transcript: str,
     title = str(parsed.get("title") or "").strip()
     task_description = str(parsed.get("taskDescription") or "").strip()
     reason = str(parsed.get("reason") or "").strip()
+    screen_context_required = bool(parsed.get("screenContextRequired", False))
 
     if not title:
         title = fallback[:80] if action == "create_task" else "Saved voice context"
@@ -1565,6 +1566,7 @@ def _normalize_activity_intent_decision(parsed: dict[str, Any], transcript: str,
         "title": title[:80],
         "taskDescription": task_description,
         "hasEnoughContext": action == "create_task",
+        "screenContextRequired": screen_context_required,
         "reason": reason,
     }
 
@@ -1581,6 +1583,7 @@ def _judge_activity_intent(request: dict[str, Any]) -> dict[str, Any]:
             "title": "Saved voice context",
             "taskDescription": "",
             "hasEnoughContext": False,
+            "screenContextRequired": False,
             "reason": "Spoken input and captured context are empty or still pending.",
         }
 
@@ -1616,7 +1619,7 @@ def _judge_activity_intent(request: dict[str, Any]) -> dict[str, Any]:
             + "Classify whether this wake-word event is enough to create and start an autonomous task. "
             + 'Return {"action":"create_task"|"save_context","title":"short title",'
             + '"taskDescription":"task prompt based on spoken input and captured context","hasEnoughContext":true|false,'
-            + '"reason":"one sentence"}'
+            + '"screenContextRequired":true|false,"reason":"one sentence"}'
         )
 
     session_id = f"bees-activity-intent-{uuid.uuid4().hex[:8]}"
@@ -1649,6 +1652,7 @@ def _judge_activity_intent(request: dict[str, Any]) -> dict[str, Any]:
         "title": "Saved voice context",
         "taskDescription": transcript or captured_text,
         "hasEnoughContext": False,
+        "screenContextRequired": False,
         "reason": "Activity intent classifier returned an unparseable response.",
     }
 

@@ -279,6 +279,10 @@ export function fetchActivityContexts() {
   return request<{ contexts: ActivityContext[] }>('/activity-contexts');
 }
 
+export function fetchActivityContext(id: string) {
+  return request<{ context: ActivityContext }>(`/activity-contexts/${id}`);
+}
+
 export function deleteActivityContext(id: string) {
   return request<{ ok: boolean }>(`/activity-contexts/${id}`, { method: 'DELETE' });
 }

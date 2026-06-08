@@ -64,7 +64,7 @@ npm run setup:hermes
 
 By default the setup scans `PATH`, configured env vars, and common Hermes install locations. For a slower broader scan, run with `Bees_HERMES_FULL_SCAN=1`.
 
-Optional microphone transcription uses Qwen3-ASR. `npm run dev` prepares the local ASR environment automatically if needed. There is no separate ASR service to start; the backend launches the ASR worker on demand when the microphone transcription endpoint is used.
+Optional microphone transcription uses IBM Granite ASR (`ibm-granite/granite-4.0-1b-speech`). `npm run dev` prepares the local ASR environment automatically if needed. There is no separate ASR service to start; the backend launches the ASR worker on demand when the microphone transcription endpoint is used.
 
 The desktop activity daemon is managed by OpenBees in development. It captures local context only, binds to `127.0.0.1`, and stores data under `~/.bees/activity-daemon` by default. Useful overrides:
 

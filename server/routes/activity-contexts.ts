@@ -82,7 +82,23 @@ function buildPromotedTaskDescription(context: ActivityContext): string {
   const taskText = normalizeSpokenInput(context.spoken_input);
   const capturedText = context.captured_text?.trim() || '';
   const userRequest = taskText || capturedText || context.decision?.title || '';
-  return userRequest || (activityContextImageValues(context).length > 0 ? 'Captured screenshot.' : '');
+  const imageValues = activityContextImageValues(context);
+  const sections = [`User request:\n${userRequest || (imageValues.length > 0 ? 'Captured screen context.' : '')}`];
+
+  if (capturedText && capturedText !== userRequest) {
+    sections.push(`Captured selected text:\n${capturedText}`);
+  }
+
+  const windowContext = activeWindowContext(context);
+  if (windowContext) {
+    sections.push(`Active window:\n${windowContext}`);
+  }
+
+  if (imageValues.length > 0) {
+    sections.push('Captured image context is available for inspection:\nUse the attached image and its visual summary when it is relevant.');
+  }
+
+  return sections.filter((section) => section.trim()).join('\n\n');
 }
 
 function activityContextImageValues(context: ActivityContext): unknown[] {
@@ -96,4 +112,21 @@ function activityContextImageValues(context: ActivityContext): unknown[] {
 function normalizeSpokenInput(value: string | null): string {
   const trimmed = value?.trim() ?? '';
   return trimmed === '[input pending]' ? '' : trimmed;
+}
+
+function activeWindowContext(context: ActivityContext): string {
+  const window = context.active_window;
+  if (!window) return '';
+
+  const pieces = [
+    compactSingleLine(window.app_name),
+    compactSingleLine(window.title),
+    compactSingleLine(window.process_name),
+  ].filter(Boolean);
+
+  return [...new Set(pieces)].join(' - ');
+}
+
+function compactSingleLine(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }

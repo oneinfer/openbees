@@ -21,7 +21,7 @@ C:\Users\Administrator\AppData\Local\Programs\Python\Python310\python.exe -m pip
 C:\Users\Administrator\AppData\Local\Programs\Python\Python310\python.exe -m activity_daemon.daemon --host 127.0.0.1 --port 4768
 ```
 
-When speech is enabled, the Qwen ASR model is preloaded before the HTTP server starts so the first wake phrase does not pay the model-load delay. To disable preload for faster startup:
+When speech is enabled, the Granite ASR model is preloaded before the HTTP server starts so the first wake phrase does not pay the model-load delay. To disable preload for faster startup:
 
 ```powershell
 $env:PRELOAD_ASR_MODEL="0"
@@ -43,7 +43,7 @@ $env:WAKEWORD_ASR_FALLBACK_ENABLED="1"
 ```
 
 When `WAKEWORD_ASR_FALLBACK_ENABLED` is on, the daemon still tries the bundled
-openWakeWord model first, then falls back to Qwen ASR phrase matching if the
+openWakeWord model first, then falls back to Granite ASR phrase matching if the
 model rejects a voice clip. This helps during early model tuning and for voices
 that were not represented well in the synthetic training set.
 
@@ -59,7 +59,7 @@ $env:STT_DEVICE_MAP="cpu"
 $env:STT_DTYPE="float32"
 ```
 
-Speech clips are screened with Silero VAD before they are sent to `Qwen/Qwen3-ASR-0.6B`. VAD is required: if Silero is unavailable or rejects the clip, the daemon will not run ASR for that audio. The VAD thresholds can be tuned:
+Speech clips are screened with Silero VAD before they are sent to `ibm-granite/granite-4.0-1b-speech`. VAD is required: if Silero is unavailable or rejects the clip, the daemon will not run ASR for that audio. The VAD thresholds can be tuned:
 
 ```powershell
 $env:VAD_THRESHOLD="0.5"
@@ -67,6 +67,15 @@ $env:VAD_MIN_SPEECH_DURATION_MS="120"
 $env:VAD_MIN_SILENCE_DURATION_MS="80"
 $env:VAD_SPEECH_PAD_MS="30"
 ```
+
+To inspect exactly what audio reaches wake-word buffering, VAD, and ASR, enable persistent debug audio saves before starting the daemon:
+
+```powershell
+$env:SPEECH_DEBUG_SAVE_AUDIO="1"
+$env:SPEECH_DEBUG_AUDIO_DIR="$env:USERPROFILE\.bees\activity-daemon\audio-debug"
+```
+
+Each capture writes a playable `.wav` plus a matching `.json` metadata file. Exact handoff points also write `.pcm16` raw 16 kHz mono int16 bytes with a matching `.wav` preview. Wake-word trigger audio is saved under `hey-bee-trigger/`; command VAD and command ASR handoffs are saved under `command-asr-inputs/`. Browser record-button uploads are saved separately by the server under `click-record-button/`. These files are not deleted automatically.
 
 Data is local-only by default and is written under:
 
@@ -113,6 +122,13 @@ By default, after the wake phrase the daemon listens for a spoken command and st
 
 ```powershell
 $env:LISTEN_FOR_COMMAND_AFTER_WAKE="0"
+```
+
+By default, the daemon waits 5 seconds for speech after "hey bee" and records up to 20 seconds for one command. To allow longer spoken input:
+
+```powershell
+$env:COMMAND_LISTEN_TIMEOUT_SECONDS="8"
+$env:COMMAND_PHRASE_TIME_LIMIT_SECONDS="45"
 ```
 
 Wake matching defaults to relaxed mode so common ASR variants like `h b` and `e b` still arm the daemon. To require clearer wake phrases:

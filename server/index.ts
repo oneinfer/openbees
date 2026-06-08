@@ -2,7 +2,7 @@ import 'dotenv/config';
 import './db/index.js';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import app, { activityDaemon, agents, qwenAsr } from './app.js';
+import app, { activityDaemon, agents, graniteAsr } from './app.js';
 import { openBrowserForDev } from './browser-opener.js';
 import { getAppSetting } from './db/queries.js';
 import { mountFrontend, type FrontendCleanup } from './frontend.js';
@@ -33,14 +33,14 @@ async function main() {
   openBrowserForDev(startupUrl);
   activityDaemon.openUiOnWake(startupUrl);
 
-  if (qwenAsr.enabled() && process.env.QWEN_ASR_PRELOAD?.trim().toLowerCase() === 'true') {
-    console.log('Loading Qwen ASR model...');
-    void qwenAsr.preload()
+  if (graniteAsr.enabled() && (process.env.GRANITE_ASR_PRELOAD ?? process.env.QWEN_ASR_PRELOAD)?.trim().toLowerCase() === 'true') {
+    console.log('Loading Granite ASR model...');
+    void graniteAsr.preload()
       .then(() => {
-        console.log('Qwen ASR model loaded.');
+        console.log('Granite ASR model loaded.');
       })
       .catch((error) => {
-        console.error('Qwen ASR model failed to load:', error);
+        console.error('Granite ASR model failed to load:', error);
       });
   }
 }
@@ -78,7 +78,7 @@ async function shutdown(reason: ShutdownReason, exitCode = 0): Promise<void> {
     closeHttpServer(),
     closeFrontend(),
     agents.stop(),
-    qwenAsr.stop(),
+    graniteAsr.stop(),
     activityDaemon.stop(),
   ]);
 

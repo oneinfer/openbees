@@ -131,11 +131,11 @@ If you want the app itself to:
 
 that needs one more implementation pass in the backend and UI.
 
-## Optional Qwen3-ASR Voice Input
+## Optional Granite ASR Voice Input
 
-Bees can transcribe spoken task/chat input with `Qwen/Qwen3-ASR-0.6B`. This is a speech-to-text layer only: the transcript is inserted into the composer, and the normal task/chat send flow still uses the selected task runtime.
+Bees can transcribe spoken task/chat input with `ibm-granite/granite-4.0-1b-speech`. This is a speech-to-text layer only: the transcript is inserted into the composer, and the normal task/chat send flow still uses the selected task runtime.
 
-Normal development startup prepares Qwen ASR automatically. `npm run dev` creates the project-local `.venv-qwen-asr`, installs `qwen-asr` if missing, writes the required `QWEN_ASR_*` values into local `.env`, and starts the app.
+Normal development startup prepares Granite ASR automatically. `npm run dev` creates the project-local `.venv-granite-asr`, installs `transformers>=4.52.1`, `torch`, `torchaudio`, and `soundfile` if missing, writes the required `GRANITE_ASR_*` values into local `.env`, and starts the app.
 
 You can also run setup directly if you want to prepare or repair the ASR environment without starting the app:
 
@@ -148,25 +148,34 @@ After setup, keep using `npm run dev`; there is no separate ASR service to start
 Manual setup is also supported if you want to prepare it yourself:
 
 ```powershell
-python -m venv .venv-qwen-asr
-.\.venv-qwen-asr\Scripts\pip.exe install -U qwen-asr
+python -m venv .venv-granite-asr
+.\.venv-granite-asr\Scripts\pip.exe install -U torch torchaudio soundfile "transformers>=4.52.1"
 ```
 
 Keep `.env.example` portable:
 
 ```env
-QWEN_ASR_ENABLED=true
-QWEN_ASR_PYTHON=
-QWEN_ASR_MODEL=Qwen/Qwen3-ASR-0.6B
-QWEN_ASR_DEVICE=cpu
-QWEN_ASR_DTYPE=float32
+GRANITE_ASR_ENABLED=true
+GRANITE_ASR_PYTHON=
+GRANITE_ASR_MODEL=ibm-granite/granite-4.0-1b-speech
+GRANITE_ASR_DEVICE=cpu
+GRANITE_ASR_DTYPE=float32
 ```
 
 For CUDA GPU machines, prefer:
 
 ```env
-QWEN_ASR_DEVICE=cuda:0
-QWEN_ASR_DTYPE=bfloat16
+GRANITE_ASR_DEVICE=cuda:0
+GRANITE_ASR_DTYPE=bfloat16
 ```
+
+To preserve browser microphone uploads for inspection, set:
+
+```env
+BEES_ASR_DEBUG_SAVE_AUDIO=true
+BEES_ASR_DEBUG_AUDIO_DIR=~/.bees/audio-debug/browser-asr
+```
+
+Each request saves the uploaded audio plus a matching metadata JSON file. These debug files are not deleted automatically.
 
 The browser microphone API works on `localhost` during development. Remote deployments need HTTPS for microphone permissions.

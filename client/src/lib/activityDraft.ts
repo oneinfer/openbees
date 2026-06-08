@@ -46,6 +46,17 @@ export function clearActivityTaskDraft(id?: string | null): void {
   if (!draft || draft.id === id) sessionStorage.removeItem(ACTIVITY_TASK_DRAFT_KEY);
 }
 
+export function discardActivityTaskDraftOnPageUnload(id?: string | null): void {
+  if (!id) return;
+  clearActivityTaskDraft(id);
+
+  if (typeof fetch !== 'function') return;
+  void fetch(`/api/activity-contexts/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    keepalive: true,
+  }).catch(() => undefined);
+}
+
 export function createActivityTaskDraft(context: ActivityContext): ActivityTaskDraft | null {
   const text = buildActivityDraftText(context);
   const image = imageFromContext(context);

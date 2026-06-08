@@ -147,6 +147,10 @@ class ScreenCapture:
         timestamp = int(time.time() * 1000)
         path = image_dir / f"{prefix}_{timestamp}.png"
         to_png(screenshot.rgb, screenshot.size, output=str(path))
+        print(
+            f"[activity-daemon] saved screenshot image: prefix={prefix}, path={path}, size={screenshot.size[0]}x{screenshot.size[1]}",
+            flush=True,
+        )
         return {"path": str(path), "region": region, "width": screenshot.size[0], "height": screenshot.size[1]}
 
     def capture_context_images(

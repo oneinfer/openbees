@@ -8,13 +8,16 @@ Rules:
 - Decide from the spoken input plus any captured selected text, active-window metadata, and captured image metadata supplied by the user message.
 - Treat selected text, active-window metadata, and captured image file metadata as context the task agent can use.
 - Image metadata proves a screenshot or crop exists. You cannot inspect the pixels in this classifier, so do not invent visual details.
-- A captured screenshot/crop IS enough context when the spoken input asks to create, build, design, clone, recreate, implement, or modify something "like this" or based on the visible reference. In that case return create_task and tell the task agent to inspect the captured image file.
+- Decide whether screen/image context is required for the task. Set screenContextRequired=true only when the task depends on visible screen content, selected text, a screenshot/crop, or phrases like "this", "like this", "on screen", "visible", or "selected".
+- Set screenContextRequired=false for self-contained requests such as coding, writing, search, or explanation tasks where the transcript alone is enough.
+- A captured screenshot/crop IS enough context when the spoken input asks to create, build, design, clone, recreate, implement, or modify something "like this" or based on the visible reference. In that case return create_task, set screenContextRequired=true, and tell the task agent to inspect the captured image file.
 - Return create_task only when the spoken input and captured context together define a clear actionable task with enough context to begin.
+- Never return create_task for incomplete command fragments such as "can you", "could you", "please", "write", "explain", or "help" unless the transcript includes what the user wants done.
 - Return save_context when the request is vague, conversational, missing the action, or has no usable spoken/captured context.
-- If returning create_task, taskDescription should include the useful selected text/window context and mention that captured image files are available for inspection.
+- If returning create_task, include only useful context in taskDescription. Mention captured image files only when screenContextRequired=true.
 
 Schema:
-{"action":"create_task"|"save_context","title":"short title","taskDescription":"task prompt based on spoken input and captured context","hasEnoughContext":true|false,"reason":"one sentence"}`;
+{"action":"create_task"|"save_context","title":"short title","taskDescription":"task prompt based on spoken input and captured context","hasEnoughContext":true|false,"screenContextRequired":true|false,"reason":"one sentence"}`;
 
 export function buildActivityIntentRequest(input: {
   transcript: string;
@@ -48,18 +51,21 @@ export function normalizeActivityIntentDecision(
   const title = typeof value?.title === 'string' && value.title.trim()
     ? value.title.trim().slice(0, 80)
     : (action === 'create_task' ? transcript.trim().slice(0, 80) || 'Voice task' : 'Saved voice context');
-  const taskDescription = typeof value?.taskDescription === 'string' && value.taskDescription.trim()
+  const fallbackDescription = transcript.trim();
+  const taskDescription = action === 'create_task' && typeof value?.taskDescription === 'string' && value.taskDescription.trim()
     ? value.taskDescription.trim()
-    : transcript.trim();
+    : fallbackDescription;
   const reason = typeof value?.reason === 'string' && value.reason.trim()
     ? value.reason.trim()
     : (action === 'create_task' ? 'Transcript contains an actionable task.' : 'Transcript does not contain enough task context.');
+  const screenContextRequired = value?.screenContextRequired === true;
 
   return {
     action,
     title,
     taskDescription,
     hasEnoughContext: action === 'create_task',
+    screenContextRequired,
     reason,
   };
 }
