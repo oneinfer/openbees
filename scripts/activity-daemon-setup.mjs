@@ -61,6 +61,52 @@ function findExecutable(name) {
   }
 }
 
+function portAudioPrefix() {
+  if (platform() !== 'darwin') return null;
+
+  const configured = process.env.PORTAUDIO_PREFIX?.trim();
+  const candidates = [
+    configured,
+    '/opt/homebrew/opt/portaudio',
+    '/usr/local/opt/portaudio',
+  ].filter(Boolean);
+
+  const brew = findExecutable('brew')
+    ?? existingFile('/opt/homebrew/bin/brew')
+    ?? existingFile('/usr/local/bin/brew');
+  if (brew) {
+    const result = spawnSync(brew, ['--prefix', 'portaudio'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (result.status === 0 && result.stdout.trim()) candidates.unshift(result.stdout.trim());
+  }
+
+  return candidates.find((prefix) => existsSync(join(prefix, 'include', 'portaudio.h'))) ?? null;
+}
+
+function nativeDependencyEnv() {
+  const prefix = portAudioPrefix();
+  if (!prefix) return {};
+
+  const appendFlag = (current, flag) => [current, flag].filter(Boolean).join(' ');
+  const appendPath = (current, path) => [path, current].filter(Boolean).join(delimiter);
+  return {
+    CPPFLAGS: appendFlag(process.env.CPPFLAGS, `-I${join(prefix, 'include')}`),
+    LDFLAGS: appendFlag(process.env.LDFLAGS, `-L${join(prefix, 'lib')}`),
+    PKG_CONFIG_PATH: appendPath(process.env.PKG_CONFIG_PATH, join(prefix, 'lib', 'pkgconfig')),
+  };
+}
+
+function ensureNativeDependencies() {
+  if (platform() !== 'darwin' || portAudioPrefix()) return;
+  throw new Error(
+    'PyAudio requires the native PortAudio library on macOS. '
+      + 'Install Homebrew from https://brew.sh, run "brew install portaudio", '
+      + 'then retry "npm run setup:activity".',
+  );
+}
+
 function parseEnvFile(path) {
   if (!existsSync(path)) return {};
   const values = {};
@@ -134,6 +180,7 @@ function run(file, args, options = {}) {
     env: {
       ...process.env,
       ...pythonEnv(pythonForEnv),
+      ...nativeDependencyEnv(),
     },
     ...spawnOptions,
   });
@@ -351,6 +398,7 @@ function requirementsPath() {
 
 function installRequirements(python) {
   ensurePip(python);
+  ensureNativeDependencies();
   const requirements = requirementsPath();
   if (!existsSync(requirements)) throw new Error(`Activity daemon requirements not found: ${requirements}`);
   console.log('[activity-daemon-setup] Installing activity daemon Python dependencies into .venv-granite-asr...');
