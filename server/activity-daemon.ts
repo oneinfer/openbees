@@ -6,12 +6,11 @@ import { broadcast, clientCount } from './events.js';
 import { openBrowserForDev } from './browser-opener.js';
 import { expandHomePrefix, resolveBeesHome } from './paths.js';
 import { getActiveActivityAgentSettings } from './activity-agent-settings.js';
-import { createTaskRecord, startTaskImmediately } from './task-service.js';
+import { createTaskRecord } from './task-service.js';
 import { normalizeActivityIntentDecision } from './prompts/activity-intent.js';
 import { appendAttachmentContext, saveActivityImageAttachments } from './attachments.js';
 import { enrichImageAttachmentContext } from './image-context.js';
-import { getActivityContextBySourceEventId, getAppSetting, insertActivityContext, updateTask } from './db/queries.js';
-import { CURRENT_PROJECT_SETTING_KEY } from './routes/projects.js';
+import { getActivityContextBySourceEventId, insertActivityContext, updateTask } from './db/queries.js';
 import { notifyTaskCreated } from './native-notifications.js';
 import type { ActivityContext, ActivityIntentDecision } from '../shared/types.js';
 import type { AsrTranscriptionResponse } from '../shared/types.js';
@@ -835,18 +834,11 @@ class ActivityDaemonService {
   ): Promise<void> {
     try {
       const description = buildActivityTaskDescription(event, decision, transcript);
-      const activeSettings = getActiveActivityAgentSettings();
-      const workspacePath = getAppSetting(CURRENT_PROJECT_SETTING_KEY);
       let task = createTaskRecord({
         title: transcript.trim() || decision.title,
         description,
         status: 'pending',
         taskKind: 'task',
-        taskMode: 'direct',
-        workspacePath,
-        runtime: activeSettings.runtime,
-        model: activeSettings.model,
-        reasoningEffort: activeSettings.reasoningEffort,
       });
       const attachments = await enrichImageAttachmentContext(
         await saveActivityImageAttachments(task.id, shouldAttachActivityImages(event, decision) ? activityImageValues(event) : []),
@@ -856,7 +848,6 @@ class ActivityDaemonService {
           description: appendAttachmentContext(description, attachments),
         }) ?? task;
       }
-      task = startTaskImmediately(task);
       notifyTaskCreated(task);
       broadcast({ type: 'task_created', task });
     } catch (error) {

@@ -1,4 +1,10 @@
-import type { Task } from '@shared/types';
+import { TASK_STATUSES, type Task, type TaskStatus } from '@shared/types';
+
+export function taskStatusesForScope(organizationId: string | null | undefined): TaskStatus[] {
+  return organizationId
+    ? [...TASK_STATUSES]
+    : TASK_STATUSES.filter((status) => status !== 'assigned');
+}
 
 export function hasUnseenAgentResponse(task: Task): boolean {
   return (

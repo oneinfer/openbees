@@ -13,13 +13,9 @@ import { parseRunSettingsBody } from '../agent-settings.js';
 import { broadcast } from '../events.js';
 import { toErrorMessage } from '../errors.js';
 import { normalizeActivityIntentDecision } from '../prompts/activity-intent.js';
-import { createTaskRecord, startTaskImmediately } from '../task-service.js';
-import { defaultRuntime, parseRuntimeValue } from '../runtime-config.js';
-import { parseWorkspacePath } from '../workspace-access.js';
-import { saveProject, setAppSetting, updateTask } from '../db/queries.js';
-import { CURRENT_PROJECT_SETTING_KEY } from './projects.js';
-import { TASK_MODES } from '../../shared/types.js';
-import type { ActivityIntentDecision, AsrTaskIntentResponse, AsrTranscriptionResponse, TaskMode } from '../../shared/types.js';
+import { createTaskRecord } from '../task-service.js';
+import { parseRuntimeValue } from '../runtime-config.js';
+import type { ActivityIntentDecision, AsrTaskIntentResponse, AsrTranscriptionResponse } from '../../shared/types.js';
 import { notifyTaskCreated } from '../native-notifications.js';
 import { resolveBeesHome } from '../paths.js';
 
@@ -110,25 +106,6 @@ function uploadedAudio(req: Request): Express.Multer.File | null {
   return 'file' in req && req.file ? req.file : null;
 }
 
-function parseTaskMode(value: unknown): TaskMode {
-  if (value === undefined || value === null || value === '') return 'direct';
-  if (typeof value !== 'string' || !(TASK_MODES as readonly string[]).includes(value)) {
-    throw new Error(`taskMode must be one of: ${TASK_MODES.join(', ')}`);
-  }
-  return value as TaskMode;
-}
-
-function parseBooleanFlag(value: unknown, fieldName: string, defaultValue = false): boolean {
-  if (value === undefined || value === null || value === '') return defaultValue;
-  if (typeof value === 'boolean') return value;
-  if (typeof value !== 'string') throw new Error(`${fieldName} must be a boolean`);
-
-  const normalized = value.trim().toLowerCase();
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
-  throw new Error(`${fieldName} must be a boolean`);
-}
-
 function noCreateDecision(reason: string, transcript = ''): ActivityIntentDecision {
   return {
     action: 'save_context',
@@ -209,17 +186,9 @@ router.post('/transcribe-task-intent', audioUploadMiddleware, async (req, res) =
 
     let runSettings: ReturnType<typeof parseRunSettingsBody>;
     let requestedRuntime: ReturnType<typeof parseRuntimeValue>;
-    let workspacePath: string | null;
-    let taskMode: TaskMode;
-    let shouldStart = true;
     try {
       runSettings = parseRunSettingsBody(req.body);
       requestedRuntime = parseRuntimeValue(req.body.runtime);
-      workspacePath = parseWorkspacePath(req.body) ?? null;
-      taskMode = parseTaskMode(req.body.taskMode ?? req.body.task_mode);
-      if (req.body.start !== undefined) {
-        shouldStart = parseBooleanFlag(req.body.start, 'start', true);
-      }
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid voice task settings' });
     }
@@ -257,40 +226,14 @@ router.post('/transcribe-task-intent', audioUploadMiddleware, async (req, res) =
       description: decision.taskDescription || transcriptText,
       status: 'pending',
       taskKind: 'task',
-      taskMode,
-      workspacePath,
-      runtime: runtime ?? defaultRuntime(),
-      model,
-      reasoningEffort,
     });
-
-    if (shouldStart) {
-      try {
-        task = startTaskImmediately(task);
-      } catch (error) {
-        const reverted = updateTask(task.id, { status: 'pending' }) ?? task;
-        notifyTaskCreated(reverted);
-        broadcast({ type: 'task_created', task: reverted });
-        const message = toErrorMessage(error, 'Task was created but could not be activated');
-        return res.status(409).json({
-          ...insertForEditResponse(transcript, message, decision, message),
-          task: reverted,
-        });
-      }
-    }
-
-    if (workspacePath) {
-      const project = saveProject({ path: workspacePath });
-      setAppSetting(CURRENT_PROJECT_SETTING_KEY, workspacePath);
-      broadcast({ type: 'project_saved', project });
-    }
 
     notifyTaskCreated(task);
     broadcast({ type: 'task_created', task });
     res.status(201).json({
       transcript,
       decision,
-      actionTaken: shouldStart ? 'task_created_started' : 'task_created',
+      actionTaken: 'task_created',
       task,
     } satisfies AsrTaskIntentResponse);
   } catch (error) {

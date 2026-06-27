@@ -9,6 +9,13 @@ export function StatusIcon({ status }: { status: TaskStatus }) {
           <circle cx="7" cy="7" r="2.25" fill="#94a3b8" />
         </svg>
       );
+    case 'assigned':
+      return (
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <circle cx="7" cy="7" r="5.5" stroke="#0ea5e9" strokeWidth="1.5" />
+          <path d="M4 7h6M7 4l3 3-3 3" stroke="#0ea5e9" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
     case 'in_progress':
       return (
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

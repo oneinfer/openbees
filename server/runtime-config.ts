@@ -20,6 +20,7 @@ interface RuntimeDefinition {
   envCommand: string | null;
   modelControl: AgentRuntimeModelControl;
   reasoningControl: AgentRuntimeReasoningControl;
+  supportsGoals: boolean;
 }
 
 interface RuntimeInstaller {
@@ -50,6 +51,7 @@ const RUNTIME_DEFINITIONS: RuntimeDefinition[] = [
     envCommand: process.env.HERMES_PYTHON?.trim() || process.env.HERMES_AGENT_DIR?.trim() || 'hermes',
     modelControl: 'picker',
     reasoningControl: 'picker',
+    supportsGoals: true,
   },
   {
     id: 'codex',
@@ -58,6 +60,7 @@ const RUNTIME_DEFINITIONS: RuntimeDefinition[] = [
     envCommand: process.env.BEES_CODEX_COMMAND?.trim() || 'codex',
     modelControl: 'picker',
     reasoningControl: 'picker',
+    supportsGoals: true,
   },
   {
     id: 'claude_code',
@@ -66,6 +69,7 @@ const RUNTIME_DEFINITIONS: RuntimeDefinition[] = [
     envCommand: process.env.BEES_CLAUDE_CODE_COMMAND?.trim() || 'claude',
     modelControl: 'picker',
     reasoningControl: 'picker',
+    supportsGoals: true,
   },
   {
     id: 'opencode',
@@ -74,6 +78,7 @@ const RUNTIME_DEFINITIONS: RuntimeDefinition[] = [
     envCommand: process.env.BEES_OPENCODE_COMMAND?.trim() || 'opencode',
     modelControl: 'picker',
     reasoningControl: 'none',
+    supportsGoals: false,
   },
 ];
 
@@ -187,6 +192,14 @@ export function runtimeCommand(runtime: Exclude<AgentRuntime, 'hermes'>): string
   return RUNTIME_DEFINITIONS.find((entry) => entry.id === runtime)?.envCommand ?? null;
 }
 
+export function runtimeSupportsGoals(runtime: AgentRuntime): boolean {
+  return RUNTIME_DEFINITIONS.find((entry) => entry.id === runtime)?.supportsGoals ?? false;
+}
+
+export function runtimeLabel(runtime: AgentRuntime): string {
+  return RUNTIME_DEFINITIONS.find((entry) => entry.id === runtime)?.label ?? runtime;
+}
+
 export function runtimeOptions(): AgentRuntimeOption[] {
   return RUNTIME_DEFINITIONS.map((entry) => ({
     ...runtimeOption(entry),
@@ -207,6 +220,7 @@ function runtimeOption(entry: RuntimeDefinition): AgentRuntimeOption {
     id: entry.id,
     label: entry.label,
     description: entry.description,
+    supportsGoals: entry.supportsGoals,
     status: installed ? 'ready' : 'configure',
     command: entry.id === 'hermes' ? null : entry.envCommand,
     installed,

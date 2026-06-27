@@ -1,4 +1,4 @@
-export const TASK_STATUSES = ['pending', 'in_progress', 'in_review', 'done'] as const;
+export const TASK_STATUSES = ['assigned', 'pending', 'in_progress', 'in_review', 'done'] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 export const TASK_MODES = ['direct', 'plan'] as const;
@@ -29,6 +29,13 @@ export interface Task {
   task_kind: TaskKind;
   task_mode: TaskMode;
   workspace_path: string | null;
+  organization_id: string | null;
+  creator_developer_id: string | null;
+  creator_email: string | null;
+  team_id: string | null;
+  team_name: string | null;
+  assignee_developer_id: string | null;
+  assignee_email: string | null;
   agent_runtime: AgentRuntime | null;
   agent_model: string | null;
   reasoning_effort: ReasoningEffort | null;
@@ -43,6 +50,8 @@ export interface Task {
 export interface Project {
   path: string;
   label: string | null;
+  organization_id?: string | null;
+  creator_developer_id?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -64,17 +73,19 @@ export interface ToolProgressEvent {
   details?: unknown;
 }
 
+export type TaskRunKind = 'chat' | 'compact';
 export type LiveChatTimelineItem =
   | { id: string; type: 'text'; content: string; created_at: number }
   | { id: string; type: 'thinking'; content: string; created_at: number }
   | { id: string; type: 'tool'; tool: ToolProgressEvent; created_at: number; updated_at?: number }
   | { id: string; type: 'error'; error: string; created_at: number };
 
-export type LiveChatRunStatus = 'streaming' | 'done' | 'error';
+export type LiveChatRunStatus = 'streaming' | 'compacting' | 'done' | 'error' | 'stopped';
 
 export interface TaskRunState {
   taskId: string;
   runId: string;
+  kind: TaskRunKind;
   status: LiveChatRunStatus;
   startedAt: number;
   updatedAt: number;
@@ -83,7 +94,7 @@ export interface TaskRunState {
 export type BoardEvent =
   | { type: 'task_created'; task: Task }
   | { type: 'task_updated'; task: Task }
-  | { type: 'task_deleted'; taskId: string }
+  | { type: 'task_deleted'; taskId: string; task?: Task }
   | { type: 'activity_draft_created'; context: ActivityContext }
   | { type: 'activity_context_created'; context: ActivityContext }
   | { type: 'activity_context_updated'; context: ActivityContext }
@@ -98,6 +109,7 @@ export type LiveChatMessage = TaskMessage & { tools?: ToolProgressEvent[]; timel
 export interface LiveChatRun {
   taskId: string;
   runId: string;
+  kind: TaskRunKind;
   sessionId: string;
   status: LiveChatRunStatus;
   startedAt: number;
@@ -110,6 +122,14 @@ export interface LiveChatRun {
 export interface ContextUsage {
   used_tokens: number;
   window_tokens: number;
+}
+
+export interface CompactResult {
+  compressed: boolean;
+  sessionId: string;
+  previousMessageCount: number;
+  compressedMessageCount: number;
+  context?: ContextUsage | null;
 }
 
 export interface ChatAttachment {
@@ -171,6 +191,7 @@ export interface AgentRuntimeOption {
   id: AgentRuntime;
   label: string;
   description: string;
+  supportsGoals: boolean;
   status: 'ready' | 'configure';
   command: string | null;
   installed: boolean;

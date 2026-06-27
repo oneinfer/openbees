@@ -166,7 +166,10 @@ def _load_audio(audio_path: str) -> Any:
         wav = wav.mean(dim=0, keepdim=True)
     if sample_rate != SAMPLE_RATE:
         wav = torchaudio.functional.resample(wav, sample_rate, SAMPLE_RATE)
-    return wav.squeeze(0).to(torch.float32)
+    wav = wav.squeeze(0).to(torch.float32)
+    if wav.shape[-1] < SAMPLE_RATE // 2:  # minimum 0.5 seconds at 16kHz
+        raise WorkerError("Audio recording is too short to transcribe (minimum 0.5 seconds)", code="audio_too_short")
+    return wav
 
 
 def _build_prompt(tokenizer: Any, language: str | None) -> str:

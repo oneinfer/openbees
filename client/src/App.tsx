@@ -1,17 +1,20 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, Component, type ReactNode, type ErrorInfo } from 'react';
+import { BrowserRouter, Navigate, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
+import { AuthProvider, useAuth } from './auth/AuthContext';
+import { OrganizationProvider, useOrganizations } from './auth/OrganizationContext';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { Board } from './components/Board';
 import { NewTaskPage } from './components/NewTaskPage';
-import { ChatPage } from './components/ChatPage';
 import { TaskDetailPage } from './components/TaskDetailPage';
 import { SettingsPage } from './components/SettingsPage';
 import { CronPage } from './components/CronPage';
 import { SkillsPage } from './components/SkillsPage';
 import { FileBrowserPage } from './components/FileBrowserPage';
 import { ProjectsPage } from './components/ProjectsPage';
-import { ActivityPage } from './components/ActivityPage';
+import { OrganizationGate } from './components/OrganizationGate';
+import { OrganizationPage } from './components/OrganizationPage';
+import { AuthCallbackPage } from './components/AuthCallbackPage';
 import { TaskCreatedToast } from './components/TaskCreatedToast';
 import { useActivityCapture } from './hooks/useActivityCapture';
 import { useTasks } from './hooks/useTasks';
@@ -19,6 +22,90 @@ import { useTheme } from './hooks/useTheme';
 import { updateCurrentProject } from './lib/api';
 import { useStore } from './lib/store';
 import { normalizeProjectPath } from './lib/projects';
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('App render error:', error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-zinc-950 p-8 text-center">
+          <p className="text-base font-semibold text-red-400">Something went wrong</p>
+          <pre className="max-w-lg overflow-auto rounded-lg bg-zinc-900 p-4 text-left text-xs text-zinc-300">
+            {this.state.error.message}
+          </pre>
+          <button
+            type="button"
+            onClick={() => { this.setState({ error: null }); window.location.href = '/'; }}
+            className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
+          >
+            Go to home
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function LoadingScreen() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-sm font-medium text-zinc-400">
+      Loading...
+    </div>
+  );
+}
+
+function OrganizationRoute() {
+  const { status } = useAuth();
+  const {
+    status: organizationStatus,
+    organizations,
+    selectedOrganization,
+    selectOrganization,
+  } = useOrganizations();
+
+  useEffect(() => {
+    if (
+      status === 'authenticated'
+      && organizationStatus === 'ready'
+      && !selectedOrganization
+      && organizations[0]
+    ) {
+      selectOrganization(organizations[0].organization_id);
+    }
+  }, [organizationStatus, organizations, selectOrganization, selectedOrganization, status]);
+
+  if (status === 'loading') return <LoadingScreen />;
+  if (status === 'unauthenticated') return <EnterpriseLoginRedirect />;
+  if (organizationStatus === 'loading' || organizationStatus === 'idle') return <LoadingScreen />;
+  if (organizationStatus === 'error') return <OrganizationGate mode="error" />;
+  if (organizations.length === 0) return <OrganizationGate mode="create" />;
+  if (!selectedOrganization) return <LoadingScreen />;
+
+  return <OrganizationPage />;
+}
+
+function EnterpriseLoginRedirect() {
+  useEffect(() => {
+    const enterpriseAppUrl = import.meta.env.VITE_OPENBEES_ENTERPRISE_APP_URL?.trim()
+      || 'http://localhost:3000';
+    const loginUrl = new URL('/login', enterpriseAppUrl);
+    loginUrl.searchParams.set('return_to', `${window.location.origin}/auth/callback`);
+    loginUrl.searchParams.set('next', '/organization');
+    window.location.replace(loginUrl.toString());
+  }, []);
+
+  return <LoadingScreen />;
+}
 
 function AppShell() {
   useTasks();
@@ -35,10 +122,11 @@ function AppShell() {
         <Routes>
           <Route path="/" element={<Board />} />
           <Route path="/projects" element={<ProjectsPage />} />
-          <Route path="/activity" element={<ActivityPage />} />
-          <Route path="/chats" element={<ChatPage />} />
-          <Route path="/chats/:chatId" element={<ChatPage />} />
+          <Route path="/organization" element={<OrganizationRoute />} />
+          <Route path="/activity" element={<Navigate to="/" replace />} />
+          <Route path="/chats/*" element={<Navigate to="/" replace />} />
           <Route path="/tasks/new" element={<NewTaskPage />} />
+          <Route path="/tasks" element={<Navigate to="/" replace />} />
           <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
           <Route path="/cron" element={<CronPage />} />
           <Route path="/skills" element={<SkillsPage />} />
@@ -62,7 +150,7 @@ function useStartupProjectRedirect() {
     if (attemptedRedirect.current || !currentProjectLoaded) return;
     attemptedRedirect.current = true;
     if (location.pathname === '/' && currentProjectPath) {
-      navigate(`/tasks/new?workspacePath=${encodeURIComponent(currentProjectPath)}`, { replace: true });
+      navigate('/tasks/new', { replace: true });
     }
   }, [currentProjectLoaded, currentProjectPath, location.pathname, navigate]);
 }
@@ -97,8 +185,18 @@ function useRememberCurrentProject() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AppShell />
-    </BrowserRouter>
+    <AppErrorBoundary>
+      <BrowserRouter>
+        <AuthProvider>
+          <OrganizationProvider>
+            <Routes>
+              <Route path="/login" element={<Navigate to="/tasks/new" replace />} />
+              <Route path="/auth/callback" element={<AuthCallbackPage />} />
+              <Route path="/*" element={<AppShell />} />
+            </Routes>
+          </OrganizationProvider>
+        </AuthProvider>
+      </BrowserRouter>
+    </AppErrorBoundary>
   );
 }

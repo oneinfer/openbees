@@ -7,9 +7,11 @@ import type {
   TaskMessage,
   ToolProgressEvent,
 } from '@shared/types';
-import { fetchMessages, BASE } from '../lib/api';
+import { apiAuthHeaders, fetchMessages, BASE } from '../lib/api';
 import { toErrorMessage } from '../lib/format';
 import type { AgentRunSettings } from '../lib/api';
+import { getSelectedOrganizationId } from '../lib/organization-selection';
+import { getStoredAccessToken, hasAuthSessionCookie } from '../lib/auth-storage';
 
 export type { ContextUsage, ToolProgressEvent };
 
@@ -191,14 +193,23 @@ function snapshotMessages(messages: LiveChatMessage[]): ChatMessage[] {
 function liveMessagesFor(committed: ChatMessage[], run: LiveChatRun): ChatMessage[] {
   const live = snapshotMessages(run.messages);
   const firstLive = live[0];
-  const lastCommitted = committed[committed.length - 1];
 
-  if (
-    firstLive?.role === 'user' &&
-    lastCommitted?.role === 'user' &&
-    firstLive.content === lastCommitted.content
-  ) {
-    return live.slice(1);
+  if (firstLive?.role === 'user' && committed.length > 0) {
+    const lastMsg = committed[committed.length - 1];
+
+    // Dedup case 1: committed ends with the same user message (normal pre-save overlap)
+    if (lastMsg.role === 'user' && lastMsg.content === firstLive.content) {
+      return live.slice(1);
+    }
+
+    // Dedup case 2: committed ends with [user, empty_assistant] — previous run left
+    // an empty placeholder; the actual user message is the second-to-last entry
+    if (lastMsg.role === 'assistant' && !lastMsg.content) {
+      const secondLast = committed[committed.length - 2];
+      if (secondLast?.role === 'user' && secondLast.content === firstLive.content) {
+        return live.slice(1);
+      }
+    }
   }
 
   return live;
@@ -408,7 +419,13 @@ export function useChat() {
     closeLiveSource();
     taskIdRef.current = taskId;
 
-    const source = new EventSource(`${BASE}/tasks/${encodeURIComponent(taskId)}/live`);
+    const organizationId = hasAuthSessionCookie() ? getSelectedOrganizationId() : null;
+    const accessToken = getStoredAccessToken();
+    const params = new URLSearchParams();
+    if (organizationId) params.set('organizationId', organizationId);
+    if (accessToken) params.set('accessToken', accessToken);
+    const query = params.toString();
+    const source = new EventSource(`${BASE}/tasks/${encodeURIComponent(taskId)}/live${query ? `?${query}` : ''}`);
     source.onmessage = (message) => {
       if (taskIdRef.current !== taskId) return;
       try {
@@ -474,7 +491,7 @@ export function useChat() {
         content,
         ...(runSettings ? { settings: runSettings } : {}),
       });
-      const headers: HeadersInit | undefined = hasAttachments ? undefined : { 'Content-Type': 'application/json' };
+      const headers: HeadersInit = hasAttachments ? apiAuthHeaders() : { 'Content-Type': 'application/json', ...apiAuthHeaders() };
 
       if (body instanceof FormData) {
         body.append('content', content);
@@ -488,7 +505,7 @@ export function useChat() {
 
       const res = await fetch(`${BASE}/tasks/${encodeURIComponent(taskId)}/messages`, {
         method: 'POST',
-        ...(headers ? { headers } : {}),
+        headers,
         body,
         signal: abort.signal,
       });

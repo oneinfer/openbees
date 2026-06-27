@@ -6,6 +6,13 @@ CREATE TABLE IF NOT EXISTS tasks (
   task_kind         TEXT NOT NULL DEFAULT 'task',
   task_mode         TEXT NOT NULL DEFAULT 'direct',
   workspace_path    TEXT,
+  organization_id   TEXT,
+  creator_developer_id TEXT,
+  creator_email     TEXT,
+  team_id           TEXT,
+  team_name         TEXT,
+  assignee_developer_id TEXT,
+  assignee_email    TEXT,
   agent_runtime     TEXT,
   agent_model       TEXT,
   reasoning_effort  TEXT,
@@ -18,15 +25,23 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_organization_id ON tasks(organization_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_creator_developer_id ON tasks(creator_developer_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee_developer_id ON tasks(assignee_developer_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_team_id ON tasks(team_id);
 
 CREATE TABLE IF NOT EXISTS projects (
   path              TEXT PRIMARY KEY,
   label             TEXT,
+  organization_id   TEXT,
+  creator_developer_id TEXT,
   created_at        INTEGER NOT NULL,
   updated_at        INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at);
+CREATE INDEX IF NOT EXISTS idx_projects_organization_id ON projects(organization_id);
+CREATE INDEX IF NOT EXISTS idx_projects_creator_developer_id ON projects(creator_developer_id);
 
 CREATE TABLE IF NOT EXISTS app_settings (
   key               TEXT PRIMARY KEY,

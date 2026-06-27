@@ -7,8 +7,15 @@ import { timeAgo } from '../lib/format';
 import { hasUnseenAgentResponse } from '../lib/taskState';
 import { TaskContextMenu } from './TaskContextMenu';
 
+function compactIdentity(value: string | null): string {
+  if (!value) return '';
+  return value.split('@')[0] || value;
+}
+
 function TaskCardBody({ task, isStreaming = false }: { task: Task; isStreaming?: boolean }) {
   const isUnseen = hasUnseenAgentResponse(task);
+  const assigneeLabel = task.assignee_email ? compactIdentity(task.assignee_email) : '';
+  const creatorLabel = compactIdentity(task.creator_email);
   const timeRowClass = isStreaming
     ? 'font-semibold text-zinc-600 dark:text-zinc-300'
     : isUnseen
@@ -35,6 +42,23 @@ function TaskCardBody({ task, isStreaming = false }: { task: Task; isStreaming?:
           {task.description}
         </p>
       )}
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] leading-none text-zinc-500 dark:text-zinc-400">
+        {task.assignee_email && (
+          <span className="max-w-full truncate rounded-md bg-zinc-100 px-1.5 py-1 dark:bg-zinc-800" title={task.assignee_email}>
+            {assigneeLabel}
+          </span>
+        )}
+        {task.team_name && (
+          <span className="max-w-full truncate rounded-md bg-sky-50 px-1.5 py-1 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300" title={task.team_name}>
+            {task.team_name}
+          </span>
+        )}
+        {creatorLabel && (
+          <span className="max-w-full truncate rounded-md bg-zinc-100 px-1.5 py-1 dark:bg-zinc-800" title={task.creator_email ?? undefined}>
+            by {creatorLabel}
+          </span>
+        )}
+      </div>
       <div
         className={`mt-3 flex items-center gap-1.5 text-[11px] leading-none ${timeRowClass}`}
       >
@@ -49,7 +73,15 @@ function TaskCardBody({ task, isStreaming = false }: { task: Task; isStreaming?:
   );
 }
 
-export function TaskCard({ task, isStreaming = false }: { task: Task; isStreaming?: boolean }) {
+export function TaskCard({
+  task,
+  isStreaming = false,
+  onRequestStart,
+}: {
+  task: Task;
+  isStreaming?: boolean;
+  onRequestStart?: (task: Task) => void;
+}) {
   const {
     attributes,
     listeners,
@@ -123,6 +155,7 @@ export function TaskCard({ task, isStreaming = false }: { task: Task; isStreamin
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={closeContextMenu}
+          onRequestStart={onRequestStart}
         />
       )}
     </>

@@ -2,9 +2,16 @@ import { useEffect, useRef } from 'react';
 import type { BoardEvent } from '@shared/types';
 import { useStore } from '../lib/store';
 import { fetchCurrentProject, fetchProjects, fetchTasks } from '../lib/api';
-import { announceTaskCreated } from '../lib/taskNotification';
+import { getStoredAccessToken } from '../lib/auth-storage';
+import { announceTaskCreated, announceTaskInReview } from '../lib/taskNotification';
+import { useOrganizations } from '../auth/OrganizationContext';
+
+function isActiveTaskRun(status: string): boolean {
+  return status === 'streaming' || status === 'compacting';
+}
 
 export function useTasks() {
+  const { selectedOrganizationId } = useOrganizations();
   const setProjects = useStore((s) => s.setProjects);
   const setCurrentProjectPath = useStore((s) => s.setCurrentProjectPath);
   const upsertProject = useStore((s) => s.upsertProject);
@@ -17,12 +24,21 @@ export function useTasks() {
   const retryRef = useRef(0);
 
   useEffect(() => {
-    fetchTasks().then((res) => setTasks(res.tasks)).catch(console.error);
-  }, [setTasks]);
+    let cancelled = false;
+    setTasks([]);
+    fetchTasks()
+      .then((res) => { if (!cancelled) setTasks(res.tasks); })
+      .catch((err) => {
+        console.error(err);
+        if (!cancelled) setTasks([]);
+      });
+    return () => { cancelled = true; };
+  }, [selectedOrganizationId, setTasks]);
 
   useEffect(() => {
+    setProjects([]);
     fetchProjects().then((res) => setProjects(res.projects)).catch(console.error);
-  }, [setProjects]);
+  }, [selectedOrganizationId, setProjects]);
 
   useEffect(() => {
     const projectPathAtRequestStart = useStore.getState().currentProjectPath;
@@ -37,7 +53,7 @@ export function useTasks() {
         const state = useStore.getState();
         if (!state.currentProjectLoaded) setCurrentProjectPath(state.currentProjectPath);
       });
-  }, [setCurrentProjectPath]);
+  }, [selectedOrganizationId, setCurrentProjectPath]);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -46,7 +62,12 @@ export function useTasks() {
 
     function connect() {
       if (cancelled) return;
-      es = new EventSource('/api/events');
+      const params = new URLSearchParams();
+      const accessToken = getStoredAccessToken();
+      if (accessToken) params.set('accessToken', accessToken);
+      if (selectedOrganizationId) params.set('organizationId', selectedOrganizationId);
+      const query = params.toString();
+      es = new EventSource(`/api/events${query ? `?${query}` : ''}`);
 
       es.onopen = () => {
         if (retryRef.current > 0) {
@@ -64,6 +85,8 @@ export function useTasks() {
             if (event.type === 'task_created') {
               const verb = event.task.status === 'in_progress' ? 'created and started in In Progress' : 'created';
               announceTaskCreated(`Task has been ${verb}: ${event.task.title}`, event.task.id);
+            } else if (event.task.status === 'in_review') {
+              announceTaskInReview(event.task.id);
             }
           } else if (event.type === 'task_deleted') {
             removeTask(event.taskId);
@@ -72,9 +95,9 @@ export function useTasks() {
           } else if (event.type === 'project_deleted') {
             removeProject(event.path, event.taskIds);
           } else if (event.type === 'task_runs_snapshot') {
-            setStreamingTasks(event.runs.filter((r) => r.status === 'streaming').map((r) => r.taskId));
+            setStreamingTasks(event.runs.filter((r) => isActiveTaskRun(r.status)).map((r) => r.taskId));
           } else if (event.type === 'task_run_updated') {
-            setTaskStreaming(event.run.taskId, event.run.status === 'streaming');
+            setTaskStreaming(event.run.taskId, isActiveTaskRun(event.run.status));
           }
         } catch {}
       };
@@ -94,5 +117,5 @@ export function useTasks() {
       clearTimeout(retryTimeout);
       es?.close();
     };
-  }, [setProjects, setTasks, upsertProject, removeProject, upsertTask, removeTask, setStreamingTasks, setTaskStreaming]);
+  }, [selectedOrganizationId, setProjects, setTasks, upsertProject, removeProject, upsertTask, removeTask, setStreamingTasks, setTaskStreaming]);
 }

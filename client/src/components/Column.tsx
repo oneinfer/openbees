@@ -18,6 +18,7 @@ interface ColumnProps {
   isFlushingPending: boolean;
   onCreatePullRequestWithAi: () => void;
   isCreatingPullRequestTask: boolean;
+  onRequestStart: (task: Task) => void;
 }
 
 export function Column({
@@ -30,6 +31,7 @@ export function Column({
   isFlushingPending,
   onCreatePullRequestWithAi,
   isCreatingPullRequestTask,
+  onRequestStart,
 }: ColumnProps) {
   const { label } = STATUS_META[status];
   const { setNodeRef, isOver } = useDroppable({ id: status });
@@ -125,7 +127,12 @@ export function Column({
         }`}
       >
         {tasks.map((task) => (
-          <TaskCard key={task.id} task={task} isStreaming={streamingTaskIds.has(task.id)} />
+          <TaskCard
+            key={task.id}
+            task={task}
+            isStreaming={streamingTaskIds.has(task.id)}
+            onRequestStart={onRequestStart}
+          />
         ))}
         {showAddButton && (
           <div className="h-9 shrink-0">

@@ -7,6 +7,7 @@ import type { AgentDefaults, AgentRuntime, Task, TaskAgentSettings, ReasoningEff
 import type { AgentRegistry } from '../adapters/registry.js';
 import { runtimeInstallResponse, setDefaultRuntime } from '../runtime-config.js';
 import { installRuntime } from '../runtime-install.js';
+import { loadOrganizationAccess, requireTaskVisible } from '../organization-access.js';
 
 const FALLBACK_DEFAULTS: AgentDefaults = {
   runtime: 'hermes',
@@ -45,6 +46,9 @@ function buildTaskSettings(task: Task, defaults: AgentDefaults, agents: AgentReg
     },
   };
 }
+
+const modelsCache = new Map<string, { result: Awaited<ReturnType<AgentRegistry['modelsFor']>>; expiresAt: number }>();
+const MODELS_CACHE_TTL_MS = 60_000;
 
 export function createAgentRouter(agents: AgentRegistry): Router {
   const router = Router();
@@ -109,8 +113,17 @@ export function createAgentRouter(agents: AgentRegistry): Router {
       return res.status(400).json({ error: `runtime must be one of: ${AGENT_RUNTIMES.join(', ')}` });
     }
 
+    const cacheKey = runtimeValue ?? agents.defaultRuntime();
+    const now = Date.now();
+    const cached = modelsCache.get(cacheKey);
+    if (cached && now < cached.expiresAt) {
+      return res.json(cached.result);
+    }
+
     try {
-      res.json(await agents.modelsFor((runtimeValue as AgentRuntime | null) ?? agents.defaultRuntime()));
+      const result = await agents.modelsFor((runtimeValue as AgentRuntime | null) ?? agents.defaultRuntime());
+      modelsCache.set(cacheKey, { result, expiresAt: now + MODELS_CACHE_TTL_MS });
+      res.json(result);
     } catch (error) {
       res.status(503).json({ error: toErrorMessage(error, 'Model discovery unavailable') });
     }
@@ -148,7 +161,14 @@ export function createTaskAgentSettingsRouter(agents: AgentRegistry): Router {
   const router = Router();
 
   router.get('/:id/agent-settings', async (req, res) => {
-    const task = getTask(req.params.id);
+    let organizationContext;
+    try {
+      organizationContext = await loadOrganizationAccess(req);
+    } catch (error) {
+      return res.status(403).json({ error: toErrorMessage(error, 'Organization access denied') });
+    }
+
+    const task = requireTaskVisible(getTask(req.params.id), organizationContext);
     if (!task) return res.status(404).json({ error: 'Task not found' });
 
     const defaults = await defaultsForSettings(agents);

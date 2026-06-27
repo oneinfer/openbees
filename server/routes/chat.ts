@@ -21,8 +21,33 @@ import {
   uploadedAttachments,
 } from '../attachments.js';
 import { enrichImageAttachmentContext } from '../image-context.js';
+import { loadOrganizationAccess, requireTaskMutable, requireTaskVisible } from '../organization-access.js';
+import { isLocalMode } from '../deployment-config.js';
+import { enterpriseJson, hasSelectedOrganization, organizationIdFromRequest, proxyEnterpriseJson } from '../enterprise-client.js';
+import { taskFromEnterprise } from './tasks.js';
 
 export const chatRouter = Router();
+
+function normalizeEnterpriseMessage(msg: Record<string, unknown>): Record<string, unknown> {
+  const createdAt = typeof msg.created_at === 'string'
+    ? new Date(msg.created_at).getTime()
+    : typeof msg.created_at === 'number' ? msg.created_at : Date.now();
+  return {
+    ...msg,
+    id: msg.id ?? msg.message_id ?? crypto.randomUUID(),
+    created_at: createdAt,
+  };
+}
+
+function dedupeConsecutiveEnterpriseUserMessages(
+  messages: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  return messages.filter((message, index) => {
+    if (message.role !== 'user' || index === 0) return true;
+    const previous = messages[index - 1];
+    return previous.role !== 'user' || previous.content !== message.content;
+  });
+}
 
 function hasNoSession(task: Task): boolean {
   if (task.last_agent_response_at !== null) return false;
@@ -30,7 +55,33 @@ function hasNoSession(task: Task): boolean {
 }
 
 chatRouter.get('/:id/messages', async (req, res) => {
-  const task = getTask(req.params.id);
+  if (isLocalMode() && hasSelectedOrganization(req)) {
+    const orgId = organizationIdFromRequest(req);
+    if (!orgId) return res.status(400).json({ error: 'Organization ID required' });
+    try {
+      const raw = await enterpriseJson<Record<string, unknown>[]>(
+        req,
+        `/organization/${encodeURIComponent(orgId)}/tasks/${encodeURIComponent(req.params.id)}/messages`,
+      );
+      const messages = Array.isArray(raw)
+        ? dedupeConsecutiveEnterpriseUserMessages(raw.map(normalizeEnterpriseMessage))
+        : [];
+      return res.json({ messages, context: null });
+    } catch (error) {
+      return res.status((error as { status?: number }).status ?? 502).json({
+        error: toErrorMessage(error, 'Failed to load messages'),
+      });
+    }
+  }
+
+  let organizationContext;
+  try {
+    organizationContext = await loadOrganizationAccess(req);
+  } catch (error) {
+    return res.status(403).json({ error: toErrorMessage(error, 'Organization access denied') });
+  }
+
+  const task = requireTaskVisible(getTask(req.params.id), organizationContext);
   if (!task) return res.status(404).json({ error: 'Task not found' });
   const liveContext = getRunContext(task.id);
   const context = liveContext !== undefined ? liveContext : contextFromTask(task);
@@ -47,7 +98,20 @@ chatRouter.get('/:id/messages', async (req, res) => {
 });
 
 chatRouter.get('/:id/session', async (req, res) => {
-  const task = getTask(req.params.id);
+  if (isLocalMode() && hasSelectedOrganization(req)) {
+    const orgId = organizationIdFromRequest(req);
+    if (!orgId) return res.status(400).json({ error: 'Organization ID required' });
+    return proxyEnterpriseJson(req, res, `/organization/${encodeURIComponent(orgId)}/tasks/${encodeURIComponent(req.params.id)}/session`);
+  }
+
+  let organizationContext;
+  try {
+    organizationContext = await loadOrganizationAccess(req);
+  } catch (error) {
+    return res.status(403).json({ error: toErrorMessage(error, 'Organization access denied') });
+  }
+
+  const task = requireTaskVisible(getTask(req.params.id), organizationContext);
   if (!task) return res.status(404).json({ error: 'Task not found' });
   if (hasNoSession(task)) return res.json({ session: null });
 
@@ -61,9 +125,42 @@ chatRouter.get('/:id/session', async (req, res) => {
 
 chatRouter.post('/:id/messages', attachmentUploadMiddleware, async (req, res) => {
   const taskId = String(req.params.id);
-  const task = getTask(taskId);
+
+  if (isLocalMode() && hasSelectedOrganization(req)) {
+    const orgId = organizationIdFromRequest(req);
+    if (!orgId) return res.status(400).json({ error: 'Organization ID required' });
+    const content = typeof req.body?.content === 'string' ? req.body.content : null;
+    if (!content) return res.status(400).json({ error: 'content is required' });
+    void cleanupUploadedAttachments(uploadedAttachments(req));
+    try {
+      const raw = await enterpriseJson<Record<string, unknown>>(
+        req,
+        `/organization/${encodeURIComponent(orgId)}/tasks/${encodeURIComponent(taskId)}`,
+      );
+      const localTask = taskFromEnterprise(raw);
+      if (localTask.status === 'pending' || localTask.status === 'assigned') {
+        return res.status(409).json({ error: 'Move this task to In Progress before sending messages' });
+      }
+      const { startEnterpriseTaskRun } = await import('../enterprise-runner.js');
+      const run = await startEnterpriseTaskRun(req, localTask, content);
+      return res.status(202).json({ runId: run.runId, run });
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      if (status === 409) return res.status(409).json({ error: toErrorMessage(error, 'Task already has a message in progress') });
+      return res.status(status ?? 502).json({ error: toErrorMessage(error, 'Failed to start enterprise task run') });
+    }
+  }
+
+  let organizationContext;
+  try {
+    organizationContext = await loadOrganizationAccess(req);
+  } catch (error) {
+    return res.status(403).json({ error: toErrorMessage(error, 'Organization access denied') });
+  }
+
+  const task = requireTaskMutable(getTask(taskId), organizationContext);
   if (!task) return res.status(404).json({ error: 'Task not found' });
-  if (task.status === 'pending') {
+  if (task.status === 'pending' || task.status === 'assigned') {
     return res.status(409).json({ error: 'Move this task to In Progress before sending messages' });
   }
 
@@ -112,12 +209,28 @@ chatRouter.post('/:id/messages', attachmentUploadMiddleware, async (req, res) =>
 });
 
 chatRouter.get('/:id/live', (req, res) => {
-  const task = getTask(req.params.id);
-  if (!task) return res.status(404).json({ error: 'Task not found' });
+  if (isLocalMode() && hasSelectedOrganization(req)) {
+    // Agent runs always execute locally even in local+org mode.
+    // The enterprise server has no /live SSE endpoint, so always serve locally.
+    const run = getRun(req.params.id);
+    initSSE(res);
+    subscribe(req.params.id, res);
+    if (run) sendSnapshot(res, run);
+    return;
+  }
 
-  initSSE(res);
-  subscribe(task.id, res);
+  loadOrganizationAccess(req)
+    .then((organizationContext) => {
+      const task = requireTaskVisible(getTask(req.params.id), organizationContext);
+      if (!task) return res.status(404).json({ error: 'Task not found' });
 
-  const run = getRun(task.id);
-  if (run) sendSnapshot(res, run);
+      initSSE(res);
+      subscribe(task.id, res);
+
+      const run = getRun(task.id);
+      if (run) sendSnapshot(res, run);
+    })
+    .catch((error) => {
+      res.status(403).json({ error: toErrorMessage(error, 'Organization access denied') });
+    });
 });

@@ -1,18 +1,48 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, Component, type ReactNode } from 'react';
 import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import { MoreHorizontal, Trash2, Loader2, Pencil } from 'lucide-react';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { StatusIcon } from './StatusIcon';
 import { useStore, optimisticMoveTask } from '../lib/store';
 import { deleteTask, patchTask, moveTask, markTaskViewed } from '../lib/api';
-import { TASK_STATUSES } from '@shared/types';
 import { STATUS_META } from '../lib/constants';
 import { timeAgo } from '../lib/format';
 import { isEditableTarget } from '../lib/keyboard';
+import { taskStatusesForScope } from '../lib/taskState';
 import { TaskChat } from './TaskChat';
 import type { AgentRunSettings } from '../lib/api';
 import type { TaskStatus } from '@shared/types';
 import { getProjectLabel, projectHref } from '../lib/projects';
+
+class ChatErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { error: error.message };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex flex-1 items-center justify-center p-8 text-center">
+          <div className="max-w-md space-y-2">
+            <p className="text-sm font-semibold text-red-400">Chat failed to load</p>
+            <pre className="overflow-auto rounded bg-zinc-900 p-3 text-left text-xs text-zinc-300">{this.state.error}</pre>
+            <button
+              type="button"
+              onClick={() => this.setState({ error: null })}
+              className="rounded bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const DETAIL_COLUMN_CLASS = 'max-w-[808px] w-full mx-auto';
 
@@ -21,6 +51,10 @@ function formatRuntimeLabel(runtime: string | null): string {
   return runtime
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function displayIdentity(email: string | null, fallback: string): string {
+  return email?.trim() || fallback;
 }
 
 export function TaskDetailPage() {
@@ -133,13 +167,32 @@ export function TaskDetailPage() {
       );
     }
     return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-zinc-400 dark:text-zinc-500">Task not found</p>
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center">
+        <p className="text-base font-semibold text-zinc-700 dark:text-zinc-200">Task not found</p>
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+          This task doesn&apos;t exist here. It may belong to the enterprise workspace.
+        </p>
+        <div className="mt-2 flex gap-2">
+          <a href="/" className="rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700">
+            Back to tasks
+          </a>
+          <a
+            href={`${(import.meta.env.VITE_OPENBEES_ENTERPRISE_APP_URL || 'http://localhost:3000').replace(/\/$/, '')}/tasks/${taskId}`}
+            className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-100 hover:bg-zinc-700 dark:bg-zinc-700 dark:hover:bg-zinc-600"
+          >
+            View in enterprise app
+          </a>
+        </div>
       </div>
     );
   }
 
-  const statusMeta = STATUS_META[task.status];
+  const statusMeta = STATUS_META[task.status] ?? { label: task.status, color: 'bg-zinc-400', tint: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400' };
+  const statusOptions = taskStatusesForScope(task.organization_id);
+  const isInactiveTask = task.status === 'pending' || task.status === 'assigned';
+  const moveStatusOptions = isInactiveTask
+    ? statusOptions.filter((status) => status !== 'in_progress')
+    : statusOptions;
   const titleMeasureText = titleDraft || 'Name this task';
 
   return (
@@ -233,6 +286,28 @@ export function TaskDetailPage() {
                 </span>
               </div>
             )}
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+              {task.assignee_email && (
+                <span className="rounded-md bg-zinc-100 px-2 py-1 font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  Assignee: {displayIdentity(task.assignee_email, 'Unassigned')}
+                </span>
+              )}
+              {task.team_name && (
+                <span className="rounded-md bg-sky-50 px-2 py-1 font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+                  Team: {task.team_name}
+                </span>
+              )}
+              {task.creator_email && (
+                <span className="rounded-md bg-zinc-100 px-2 py-1 font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  Creator: {displayIdentity(task.creator_email, 'Unknown')}
+                </span>
+              )}
+              {task.agent_model && (
+                <span className="rounded-md bg-zinc-100 px-2 py-1 font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  Model: {task.agent_model}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="flex shrink-0 items-center gap-2.5 sm:pt-1.5">
@@ -257,7 +332,7 @@ export function TaskDetailPage() {
                   <p className="px-3 py-1.5 text-[11px] font-medium text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">
                     Move to
                   </p>
-                  {TASK_STATUSES.filter((s) => s !== task.status).map((status) => (
+                  {moveStatusOptions.filter((s) => s !== task.status).map((status) => (
                     <button
                       key={status}
                       onClick={() => handleStatusChange(status)}
@@ -283,13 +358,16 @@ export function TaskDetailPage() {
       </div>
 
       <div className="w-full flex-1 flex flex-col min-h-0">
-        <TaskChat
-          taskId={task.id}
-          taskStatus={task.status}
-          initialMessage={initialMessage}
-          initialSettings={initialSettings}
-          workspacePath={task.workspace_path}
-        />
+        <ChatErrorBoundary>
+          <TaskChat
+            taskId={task.id}
+            taskStatus={task.status}
+            taskMode={task.task_mode}
+            initialMessage={initialMessage}
+            initialSettings={initialSettings}
+            workspacePath={task.workspace_path}
+          />
+        </ChatErrorBoundary>
       </div>
 
       {showDeleteConfirm && (

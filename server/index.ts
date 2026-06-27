@@ -2,7 +2,7 @@ import 'dotenv/config';
 import './db/index.js';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import app, { activityDaemon, agents, graniteAsr } from './app.js';
+import app, { activityDaemon, agents, graniteAsr, liveTts } from './app.js';
 import { openBrowserForDev } from './browser-opener.js';
 import { getAppSetting } from './db/queries.js';
 import { mountFrontend, type FrontendCleanup } from './frontend.js';
@@ -25,13 +25,7 @@ async function main() {
   await once(httpServer, 'listening');
 
   const url = `http://localhost:${PORT}`;
-  const currentProjectPath = getAppSetting(CURRENT_PROJECT_SETTING_KEY);
-  const startupUrl = currentProjectPath
-    ? `${url}/tasks/new?workspacePath=${encodeURIComponent(currentProjectPath)}`
-    : url;
-  console.log(`Hermes Agent Mission Control running on ${url}`);
-  openBrowserForDev(startupUrl);
-  activityDaemon.openUiOnWake(startupUrl);
+  const startupUrl = `${url}/tasks/new`;
 
   if (graniteAsr.enabled() && (process.env.GRANITE_ASR_PRELOAD ?? process.env.QWEN_ASR_PRELOAD)?.trim().toLowerCase() === 'true') {
     console.log('Loading Granite ASR model...');
@@ -43,6 +37,26 @@ async function main() {
         console.error('Granite ASR model failed to load:', error);
       });
   }
+
+  void agents.hermes.start()
+    .then(() => agents.modelsFor('hermes'))
+    .then(() => { console.log('Agent worker pre-warmed.'); })
+    .catch(() => {});
+
+  if (liveTts.enabled() && (process.env.LUX_TTS_PRELOAD ?? 'true').trim().toLowerCase() === 'true') {
+    console.log('Loading LuxTTS model...');
+    await liveTts.preload()
+      .then(() => {
+        console.log('LuxTTS model loaded.');
+      })
+      .catch((error) => {
+        console.error('LuxTTS model failed to load:', error);
+      });
+  }
+
+  console.log(`Hermes Agent Mission Control running on ${url}`);
+  openBrowserForDev(startupUrl);
+  activityDaemon.openUiOnWake(startupUrl);
 }
 
 function closeHttpServer(): Promise<void> {
@@ -79,6 +93,7 @@ async function shutdown(reason: ShutdownReason, exitCode = 0): Promise<void> {
     closeFrontend(),
     agents.stop(),
     graniteAsr.stop(),
+    liveTts.stop(),
     activityDaemon.stop(),
   ]);
 

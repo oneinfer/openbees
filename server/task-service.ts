@@ -67,6 +67,10 @@ export function startTaskActivationRun(task: Task): void {
   startTaskRun(task, activationPromptForTask(task));
 }
 
+export function inactiveStatusForTaskScope(task: Pick<Task, 'organization_id'>): Task['status'] {
+  return task.organization_id ? 'assigned' : 'pending';
+}
+
 export function createTaskRecord(input: {
   description: string;
   title?: string | null;
@@ -74,18 +78,36 @@ export function createTaskRecord(input: {
   taskKind?: TaskKind;
   taskMode?: TaskMode;
   workspacePath?: string | null;
+  organizationId?: string | null;
+  creatorDeveloperId?: string | null;
+  creatorEmail?: string | null;
+  teamId?: string | null;
+  teamName?: string | null;
+  assigneeDeveloperId?: string | null;
+  assigneeEmail?: string | null;
   runtime?: AgentRuntime | null;
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
 }): Task {
   const title = input.title?.trim() || generateTaskTitle(input.description);
+  const requestedStatus = input.status ?? 'pending';
+  const status = requestedStatus === 'pending' && input.organizationId
+    ? 'assigned'
+    : requestedStatus;
   return insertTask({
     title,
     description: input.description,
-    status: input.status ?? 'pending',
+    status,
     task_kind: input.taskKind ?? 'task',
     task_mode: input.taskMode ?? 'direct',
     workspace_path: input.workspacePath ?? null,
+    organization_id: input.organizationId ?? null,
+    creator_developer_id: input.creatorDeveloperId ?? null,
+    creator_email: input.creatorEmail ?? null,
+    team_id: input.teamId ?? null,
+    team_name: input.teamName ?? null,
+    assignee_developer_id: input.assigneeDeveloperId ?? null,
+    assignee_email: input.assigneeEmail ?? null,
     agent_runtime: input.runtime ?? defaultRuntime(),
     agent_model: input.model ?? null,
     reasoning_effort: input.reasoningEffort ?? null,

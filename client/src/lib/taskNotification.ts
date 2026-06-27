@@ -1,3 +1,5 @@
+import { BASE, apiAuthHeaders } from './api.js';
+
 export const TASK_CREATED_EVENT = 'bees:task-created';
 
 export interface TaskCreatedNotificationDetail {
@@ -8,9 +10,24 @@ export interface TaskCreatedNotificationDetail {
 const TASK_NOTIFICATIONS_ENABLED_KEY = 'bees:taskNotificationsEnabled';
 const TASK_NOTIFICATION_PREFERENCE_EVENT = 'bees:task-notification-preference';
 
-let audioContext: AudioContext | null = null;
 let notificationPermissionRequest: Promise<NotificationPermission> | null = null;
 const recentNotifications = new Map<string, number>();
+
+export function announceTaskStarted(): void {
+  void speakWithLuxTts('Task execution started').catch(() => speakWithBrowserSynthesis('Task execution started'));
+}
+
+const recentInReviewAnnouncements = new Map<string, number>();
+
+export function announceTaskInReview(taskId: string): void {
+  const now = Date.now();
+  for (const [id, ts] of recentInReviewAnnouncements) {
+    if (now - ts > 10000) recentInReviewAnnouncements.delete(id);
+  }
+  if (recentInReviewAnnouncements.has(taskId)) return;
+  recentInReviewAnnouncements.set(taskId, now);
+  void speakWithLuxTts('Task execution completed, ready for review').catch(() => speakWithBrowserSynthesis('Task execution completed, ready for review'));
+}
 
 export function announceTaskCreated(title = 'Task created', taskId?: string): void {
   if (taskId && wasRecentlyAnnounced(taskId)) return;
@@ -18,14 +35,12 @@ export function announceTaskCreated(title = 'Task created', taskId?: string): vo
   window.dispatchEvent(new CustomEvent<TaskCreatedNotificationDetail>(TASK_CREATED_EVENT, {
     detail: { title, taskId },
   }));
-  playTaskCreatedSound();
+  speakTaskCreated();
   showTaskCreatedSystemNotification(title, taskId);
 }
 
 export function primeTaskCreatedSound(): void {
-  const ctx = getAudioContext();
-  if (!ctx || ctx.state !== 'suspended') return;
-  void ctx.resume().catch(() => {});
+  // no-op: sound replaced with speech synthesis
 }
 
 export function primeTaskCreatedNotifications(): void {
@@ -86,28 +101,53 @@ export function subscribeTaskCreatedSystemNotificationPreference(listener: () =>
   };
 }
 
-function playTaskCreatedSound(): void {
-  const ctx = getAudioContext();
-  if (!ctx) return;
+function speakTaskCreated(): void {
+  void speakWithLuxTts('Task created').catch(() => speakWithBrowserSynthesis('Task created'));
+}
 
+async function speakWithLuxTts(text: string): Promise<void> {
+  const readCsrfToken = () => {
+    const match = document.cookie.split(';').map((p) => p.trim()).find((p) => p.startsWith('bees_csrf_token='));
+    return match ? decodeURIComponent(match.slice('bees_csrf_token='.length)) : null;
+  };
+  const csrfToken = readCsrfToken();
+  const res = await fetch(`${BASE}/tts/synthesize`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...apiAuthHeaders(), ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error(`LuxTTS synthesize failed: ${res.status}`);
+  const { audioBase64, sampleRate } = await res.json() as { audioBase64: string; sampleRate: number };
+
+  const binary = atob(audioBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const int16 = new Int16Array(bytes.buffer);
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+
+  const ctx = new AudioContext({ sampleRate });
+  const buffer = ctx.createBuffer(1, float32.length, sampleRate);
+  buffer.copyToChannel(float32, 0);
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(ctx.destination);
+  source.start();
+  await new Promise<void>((resolve) => { source.onended = () => resolve(); });
+  await ctx.close();
+}
+
+function speakWithBrowserSynthesis(text: string): void {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return;
   try {
-    const oscillator = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const now = ctx.currentTime;
-
-    oscillator.type = 'square';
-    oscillator.frequency.setValueAtTime(880, now);
-    oscillator.frequency.setValueAtTime(660, now + 0.08);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.08, now + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
-
-    oscillator.connect(gain);
-    gain.connect(ctx.destination);
-    oscillator.start(now);
-    oscillator.stop(now + 0.2);
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1;
+    utterance.volume = 0.8;
+    window.speechSynthesis.speak(utterance);
   } catch {
-    // Browsers may block audio until a user gesture. The visual toast still appears.
+    // Speech synthesis may be blocked before a user gesture.
   }
 }
 
@@ -133,20 +173,6 @@ function showTaskCreatedSystemNotification(title: string, taskId?: string): void
   }
 }
 
-function getAudioContext(): AudioContext | null {
-  if (audioContext) return audioContext;
-
-  const AudioContextCtor = window.AudioContext ?? window.webkitAudioContext;
-  if (!AudioContextCtor) return null;
-
-  try {
-    audioContext = new AudioContextCtor();
-    return audioContext;
-  } catch {
-    return null;
-  }
-}
-
 function wasRecentlyAnnounced(taskId: string): boolean {
   const now = Date.now();
   for (const [id, timestamp] of recentNotifications) {
@@ -155,10 +181,4 @@ function wasRecentlyAnnounced(taskId: string): boolean {
   if (recentNotifications.has(taskId)) return true;
   recentNotifications.set(taskId, now);
   return false;
-}
-
-declare global {
-  interface Window {
-    webkitAudioContext?: typeof AudioContext;
-  }
 }
