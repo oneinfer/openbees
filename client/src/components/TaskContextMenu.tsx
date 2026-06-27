@@ -2,21 +2,22 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Trash2 } from 'lucide-react';
 import type { Task, TaskStatus } from '@shared/types';
-import { TASK_STATUSES } from '@shared/types';
 import { STATUS_META } from '../lib/constants';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { StatusIcon } from './StatusIcon';
 import { useStore, optimisticMoveTask } from '../lib/store';
 import { moveTask, deleteTask } from '../lib/api';
+import { taskStatusesForScope } from '../lib/taskState';
 
 interface Props {
   task: Task;
   x: number;
   y: number;
   onClose: () => void;
+  onRequestStart?: (task: Task) => void;
 }
 
-export function TaskContextMenu({ task, x, y, onClose }: Props) {
+export function TaskContextMenu({ task, x, y, onClose, onRequestStart }: Props) {
   const upsertTask = useStore((s) => s.upsertTask);
   const removeTask = useStore((s) => s.removeTask);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -52,6 +53,10 @@ export function TaskContextMenu({ task, x, y, onClose }: Props) {
 
   async function handleMove(status: TaskStatus) {
     onClose();
+    if ((task.status === 'pending' || task.status === 'assigned') && status === 'in_progress' && onRequestStart) {
+      onRequestStart(task);
+      return;
+    }
     await optimisticMoveTask(task, status, upsertTask, moveTask);
   }
 
@@ -63,7 +68,7 @@ export function TaskContextMenu({ task, x, y, onClose }: Props) {
     } catch {}
   }
 
-  const otherStatuses = TASK_STATUSES.filter((s) => s !== task.status);
+  const otherStatuses = taskStatusesForScope(task.organization_id).filter((s) => s !== task.status);
 
   return createPortal(
     <>

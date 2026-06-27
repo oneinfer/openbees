@@ -30,6 +30,8 @@ import type {
   TaskStatus,
   ReasoningEffort,
 } from '@shared/types';
+import { getStoredAccessToken, hasAuthSessionCookie } from './auth-storage';
+import { getSelectedOrganizationId } from './organization-selection';
 
 export type { AgentRunSettings };
 
@@ -57,13 +59,28 @@ export interface SkillMeta {
   autoIncluded: boolean;
 }
 
+export function apiAuthHeaders(): Record<string, string> {
+  const token = getStoredAccessToken();
+  const organizationId = hasAuthSessionCookie() ? getSelectedOrganizationId() : null;
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(organizationId ? { 'X-Bees-Organization-Id': organizationId } : {}),
+  };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const { headers: extraHeaders, ...rest } = init ?? {};
   const isFormDataBody = typeof FormData !== 'undefined' && rest.body instanceof FormData;
+  const authHeaders = apiAuthHeaders();
+  const method = (rest.method || 'GET').toUpperCase();
+  const csrfToken = method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
+    ? null
+    : readCookie('bees_csrf_token');
   const res = await fetch(`${BASE}${path}`, {
+    credentials: 'include',
     headers: isFormDataBody
-      ? extraHeaders
-      : { 'Content-Type': 'application/json', ...extraHeaders as Record<string, string> },
+      ? { ...authHeaders, ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}), ...extraHeaders as Record<string, string> }
+      : { 'Content-Type': 'application/json', ...authHeaders, ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}), ...extraHeaders as Record<string, string> },
     ...rest,
   });
   if (!res.ok) {
@@ -77,6 +94,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readCookie(name: string): string | null {
+  const prefix = `${name}=`;
+  const match = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+  return match ? decodeURIComponent(match.slice(prefix.length)) : null;
 }
 
 export function fetchTasks() {
@@ -125,11 +151,35 @@ export function deleteTask(id: string) {
 
 export function patchTask(
   id: string,
-  fields: { title?: string; description?: string; status?: TaskStatus; workspacePath?: string | null; runtime?: AgentRuntime | null },
+  fields: {
+    title?: string;
+    description?: string;
+    status?: TaskStatus;
+    workspacePath?: string | null;
+    runtime?: AgentRuntime | null;
+    teamId?: string | null;
+    assigneeDeveloperId?: string | null;
+  },
 ) {
   return request<{ task: Task }>(`/tasks/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(fields),
+  });
+}
+
+export function startTask(
+  id: string,
+  settings: {
+    workspacePath: string;
+    runtime?: AgentRuntime | null;
+    model?: string | null;
+    reasoningEffort?: ReasoningEffort | null;
+    taskMode?: TaskMode;
+  },
+) {
+  return request<{ task: Task }>(`/tasks/${id}/start`, {
+    method: 'POST',
+    body: JSON.stringify(settings),
   });
 }
 
@@ -150,18 +200,15 @@ export function createTask(
   attachments?: File[],
   taskKind?: TaskKind,
   start?: boolean,
+  assignment?: { teamId?: string | null; assigneeEmail?: string | null },
 ) {
   if (attachments?.length) {
     const formData = new FormData();
     formData.append('description', description);
     appendOptionalFormValue(formData, 'title', title);
-    appendOptionalFormValue(formData, 'workspacePath', workspacePath);
-    appendOptionalFormValue(formData, 'runtime', runtime);
-    appendOptionalFormValue(formData, 'model', model);
-    appendOptionalFormValue(formData, 'reasoningEffort', reasoningEffort);
-    appendOptionalFormValue(formData, 'taskMode', taskMode);
     appendOptionalFormValue(formData, 'taskKind', taskKind);
-    if (start !== undefined) formData.append('start', String(start));
+    appendOptionalFormValue(formData, 'teamId', assignment?.teamId);
+    appendOptionalFormValue(formData, 'assigneeEmail', assignment?.assigneeEmail);
     for (const attachment of attachments) {
       formData.append('attachments', attachment, attachment.name);
     }
@@ -174,7 +221,13 @@ export function createTask(
 
   return request<{ task: Task }>('/tasks', {
     method: 'POST',
-    body: JSON.stringify({ description, title, workspacePath, runtime, model, reasoningEffort, taskMode, taskKind, start }),
+    body: JSON.stringify({
+      description,
+      title,
+      taskKind,
+      teamId: assignment?.teamId,
+      assigneeEmail: assignment?.assigneeEmail,
+    }),
   });
 }
 
@@ -187,11 +240,35 @@ export function fetchSession(taskId: string) {
 }
 
 export function fetchHealth() {
-  return request<{ ok: boolean; hermes: boolean; runtimes: Record<AgentRuntime, boolean>; asr: AsrStatusResponse }>('/health');
+  return request<{ ok: boolean; hermes: boolean; runtimes: Record<AgentRuntime, boolean>; asr: AsrStatusResponse; tts?: TtsStatusResponse }>('/health');
+}
+
+export interface TtsStatusResponse {
+  enabled: boolean;
+  available: boolean;
+  model: string;
+  device: string;
+  sampleRate: number;
+  segmentMaxChars: number;
+  error?: string;
 }
 
 export function fetchAsrStatus() {
   return request<AsrStatusResponse>('/asr/status');
+}
+
+export function fetchTtsStatus() {
+  return request<TtsStatusResponse>('/tts/status');
+}
+
+export function liveTaskTtsUrl(taskId: string) {
+  const params = new URLSearchParams();
+  const organizationId = hasAuthSessionCookie() ? getSelectedOrganizationId() : null;
+  const accessToken = getStoredAccessToken();
+  if (organizationId) params.set('organizationId', organizationId);
+  if (accessToken) params.set('accessToken', accessToken);
+  const query = params.toString();
+  return `${BASE}/tts/tasks/${encodeURIComponent(taskId)}/live${query ? `?${query}` : ''}`;
 }
 
 export function transcribeAudio(audio: Blob, language?: string) {

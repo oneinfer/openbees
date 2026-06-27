@@ -491,7 +491,7 @@ export function ModelPicker({
       models: [
         {
           value: '',
-          label: defaultModel ? `Inherit: ${defaultModel}` : 'Inherit default',
+          label: defaultModel ? defaultModel : 'Default',
           provider: 'Default',
         },
       ],
@@ -596,7 +596,7 @@ export function ModelPicker({
     if (selectedModel?.label) return selectedModel.label;
     if (value) return value;
     if (!showInheritOption) return 'Select model';
-    return defaultModel ? `Inherit: ${defaultModel}` : 'Inherit default';
+    return defaultModel ? defaultModel : 'Default';
   })();
 
   const updatePosition = useCallback(() => {
@@ -1003,7 +1003,7 @@ export function InputToolbar({
   const reasoningOptions = useMemo<ToolbarSelectOption[]>(() => [
     {
       value: '',
-      label: defaultReasoning ? `Inherit: ${REASONING_LABELS[defaultReasoning]}` : 'Inherit default',
+      label: defaultReasoning ? REASONING_LABELS[defaultReasoning] : 'Default',
     },
     ...REASONING_EFFORTS.map((effort) => ({
       value: effort,
@@ -1013,7 +1013,7 @@ export function InputToolbar({
 
   if (!defaults) {
     return (
-      <div className="flex items-center gap-2 min-w-0 flex-wrap">
+      <div className="flex items-center gap-2 min-w-0 flex-nowrap">
         <LoadingToolbarButton icon={Sparkles} className="[&>span]:w-20" />
         <LoadingToolbarButton icon={Sparkles} className="[&>span]:w-24" />
         <LoadingToolbarButton icon={Zap} className="[&>span]:w-14" />
@@ -1022,7 +1022,7 @@ export function InputToolbar({
   }
 
   return (
-    <div className="flex items-center gap-2 min-w-0 flex-wrap">
+    <div className="flex items-center gap-2 min-w-0 flex-nowrap">
       <ToolbarSelect
         icon={Sparkles}
         value={effectiveRuntime}

@@ -120,6 +120,7 @@ function createHermesWorkerEnv(): NodeJS.ProcessEnv {
     ...env,
     HERMES_QUIET: '1',
     HERMES_YOLO_MODE: '1',
+    PYTHONIOENCODING: 'utf-8',
   };
 }
 

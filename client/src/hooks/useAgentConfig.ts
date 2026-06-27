@@ -4,8 +4,18 @@ import type { AgentRunSettings } from '../lib/api';
 import { readCachedAgentDefaults, writeCachedAgentDefaults } from '../lib/agentDefaultsCache';
 import type { AgentDefaults, AgentModelGroup, AgentRuntime, AgentRuntimeOption, ReasoningEffort } from '@shared/types';
 
+const FALLBACK_DEFAULTS: AgentDefaults = {
+  runtime: 'hermes',
+  provider: null,
+  model: null,
+  baseUrl: null,
+  apiMode: null,
+  reasoningEffort: null,
+  showReasoning: false,
+};
+
 export function useAgentConfig(taskId?: string, initialSettings?: AgentRunSettings) {
-  const [defaults, setDefaults] = useState<AgentDefaults | null>(() => readCachedAgentDefaults());
+  const [defaults, setDefaults] = useState<AgentDefaults>(() => readCachedAgentDefaults() ?? FALLBACK_DEFAULTS);
   const [runtimeOptions, setRuntimeOptions] = useState<AgentRuntimeOption[]>([]);
   const [runtime, setRuntime] = useState<AgentRuntime | null>(initialSettings?.runtime ?? null);
   const [modelGroups, setModelGroups] = useState<AgentModelGroup[]>([]);
@@ -25,14 +35,14 @@ export function useAgentConfig(taskId?: string, initialSettings?: AgentRunSettin
     let cancelled = false;
     let timeoutId: number | null = null;
 
-    function loadConfig() {
-      setIsLoading(true);
+    function loadConfig(isRetry = false) {
+      if (!isRetry) setIsLoading(true);
       Promise.allSettled([
         taskId ? fetchTaskAgentSettings(taskId) : fetchAgentDefaults(),
         fetchAgentRuntimes(),
       ]).then(([settingsResult, runtimesResult]) => {
         if (cancelled) return;
-        
+
         let allSucceeded = true;
         if (settingsResult.status === 'fulfilled') {
           const val = settingsResult.value;
@@ -58,10 +68,9 @@ export function useAgentConfig(taskId?: string, initialSettings?: AgentRunSettin
           allSucceeded = false;
         }
 
-        if (allSucceeded) {
-          setIsLoading(false);
-        } else {
-          timeoutId = window.setTimeout(loadConfig, 2000);
+        if (!isRetry) setIsLoading(false);
+        if (!allSucceeded) {
+          timeoutId = window.setTimeout(() => loadConfig(true), 2000);
         }
       });
     }

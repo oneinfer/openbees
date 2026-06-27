@@ -1,9 +1,16 @@
 import type { Response } from 'express';
 import type { BoardEvent } from '../shared/types.js';
+import { getTask } from './db/queries.js';
+import { taskVisibleToOrganizationContext, type OrganizationAccessContext } from './organization-access.js';
 
 export type { BoardEvent };
 
-const clients = new Set<Response>();
+interface EventClient {
+  res: Response;
+  context: OrganizationAccessContext;
+}
+
+const clients = new Set<EventClient>();
 
 const KEEPALIVE_INTERVAL_MS = 30_000;
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
@@ -12,7 +19,7 @@ function startKeepalive() {
   if (keepaliveTimer) return;
   keepaliveTimer = setInterval(() => {
     for (const client of clients) {
-      try { client.write(':keepalive\n\n'); } catch { clients.delete(client); }
+      try { client.res.write(':keepalive\n\n'); } catch { clients.delete(client); }
     }
     if (clients.size === 0) {
       clearInterval(keepaliveTimer!);
@@ -28,14 +35,30 @@ export function initSSE(res: Response): void {
   res.flushHeaders();
 }
 
-export function addClient(res: Response) {
-  clients.add(res);
-  res.on('close', () => clients.delete(res));
+export function addClient(res: Response, context: OrganizationAccessContext) {
+  const client = { res, context };
+  clients.add(client);
+  res.on('close', () => clients.delete(client));
   startKeepalive();
 }
 
 export function clientCount(): number {
   return clients.size;
+}
+
+function eventVisibleToClient(event: BoardEvent, context: OrganizationAccessContext): boolean {
+  if (event.type === 'task_created' || event.type === 'task_updated') {
+    return taskVisibleToOrganizationContext(event.task, context);
+  }
+  if (event.type === 'task_deleted') {
+    if (event.task) return taskVisibleToOrganizationContext(event.task, context);
+    return true;
+  }
+  if (event.type === 'task_run_updated') {
+    const task = getTask(event.run.taskId);
+    return task ? taskVisibleToOrganizationContext(task, context) : true;
+  }
+  return true;
 }
 
 function writeEvent(res: Response, event: BoardEvent): boolean {
@@ -53,6 +76,18 @@ export function sendEvent(res: Response, event: BoardEvent): void {
 
 export function broadcast(event: BoardEvent) {
   for (const client of clients) {
-    if (!writeEvent(client, event)) clients.delete(client);
+    let visibleEvent = event;
+    if (event.type === 'task_runs_snapshot') {
+      visibleEvent = {
+        ...event,
+        runs: event.runs.filter((run) => {
+          const task = getTask(run.taskId);
+          return task ? taskVisibleToOrganizationContext(task, client.context) : true;
+        }),
+      };
+    } else if (!eventVisibleToClient(event, client.context)) {
+      continue;
+    }
+    if (!writeEvent(client.res, visibleEvent)) clients.delete(client);
   }
 }

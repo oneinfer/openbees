@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Project, Task, TaskStatus } from '@shared/types';
+import { announceTaskStarted, announceTaskInReview } from './taskNotification';
 
 interface AppState {
   projects: Project[];
@@ -138,6 +139,7 @@ export async function optimisticMoveTask(
   try {
     const res = await apiMove(task.id, status);
     upsertTask(res.task);
+    if (status === 'in_progress') announceTaskStarted();
   } catch {
     upsertTask(task);
   }

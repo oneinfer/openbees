@@ -3,17 +3,14 @@ import {
   deleteActivityContext,
   getActivityContext,
   getAllActivityContexts,
-  getAppSetting,
   updateTask,
   updateActivityContextPromotedTask,
 } from '../db/queries.js';
 import { broadcast } from '../events.js';
-import { createTaskRecord, startTaskImmediately } from '../task-service.js';
+import { createTaskRecord } from '../task-service.js';
 import { toErrorMessage } from '../errors.js';
-import { getActiveActivityAgentSettings } from '../activity-agent-settings.js';
 import { appendAttachmentContext, saveActivityImageAttachments } from '../attachments.js';
 import { enrichImageAttachmentContext } from '../image-context.js';
-import { CURRENT_PROJECT_SETTING_KEY } from './projects.js';
 import { notifyTaskCreated } from '../native-notifications.js';
 import type { ActivityContext } from '../../shared/types.js';
 
@@ -46,18 +43,11 @@ activityContextsRouter.post('/:id/promote', async (req, res) => {
   if (!description.trim()) return res.status(400).json({ error: 'No context is available to promote' });
 
   try {
-    const activeSettings = getActiveActivityAgentSettings();
-    const workspacePath = getAppSetting(CURRENT_PROJECT_SETTING_KEY);
     let task = createTaskRecord({
       title: requestedTitle || normalizeSpokenInput(context.spoken_input) || context.decision?.title || undefined,
       description,
       status: 'pending',
       taskKind: 'task',
-      taskMode: 'direct',
-      workspacePath,
-      runtime: activeSettings.runtime,
-      model: activeSettings.model,
-      reasoningEffort: activeSettings.reasoningEffort,
     });
     const attachments = await enrichImageAttachmentContext(
       await saveActivityImageAttachments(task.id, activityContextImageValues(context)),
@@ -67,7 +57,6 @@ activityContextsRouter.post('/:id/promote', async (req, res) => {
         description: appendAttachmentContext(description, attachments),
       }) ?? task;
     }
-    task = startTaskImmediately(task);
     const updatedContext = updateActivityContextPromotedTask(context.id, task.id) ?? context;
     notifyTaskCreated(task);
     broadcast({ type: 'task_created', task });

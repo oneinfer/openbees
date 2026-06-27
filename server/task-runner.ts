@@ -11,13 +11,14 @@ import {
 import { taskRunSettings } from './agent-settings.js';
 import { buildTaskAgentSystemPrompt } from './prompts/task-agent.js';
 import { toErrorMessage } from './errors.js';
+import { liveTts } from './tts/live-tts.js';
 import type { StreamEvent } from './adapters/types.js';
 import type { ContextUsage, LiveChatRun, Task } from '../shared/types.js';
 
 const DONE_SNAPSHOT_TTL_MS = 30_000;
 const ERROR_SNAPSHOT_TTL_MS = 5 * 60_000;
 
-async function judgeTaskCompletion(task: Task, responseText: string, responseAt: number): Promise<void> {
+export async function judgeTaskCompletion(task: Task, responseText: string, responseAt: number): Promise<void> {
   if (!responseText.trim() || task.status !== 'in_progress') return;
 
   try {
@@ -66,19 +67,25 @@ async function consumeChatRun(
     });
 
     for await (const event of stream) {
-      if (event.type === 'text_delta' && responseText.length < 4200) responseText += event.content ?? '';
+      if (event.type === 'text_delta') {
+        liveTts.acceptDelta(runTask.id, event.content ?? '');
+        if (responseText.length < 4200) responseText += event.content ?? '';
+      }
       if (event.type === 'thinking_delta' && thinkingText.length < 4200) thinkingText += event.content ?? '';
       if (event.type === 'done') {
         sawDone = true;
         doneContext = event.context;
+        liveTts.end(runTask.id);
       }
       applyEvent(runTask.id, event);
       broadcastLive(runTask.id, event);
+      liveTts.end(runTask.id);
     }
   } catch (error) {
     const event: StreamEvent = { type: 'error', error: toErrorMessage(error, 'Hermes chat stream failed') };
     applyEvent(runTask.id, event);
     broadcastLive(runTask.id, event);
+    liveTts.end(runTask.id);
   } finally {
     const currentRun = getRunStatus(runTask.id);
     if (!sawDone && currentRun?.status === 'streaming') {
@@ -86,6 +93,7 @@ async function consumeChatRun(
       sawDone = true;
       applyEvent(runTask.id, event);
       broadcastLive(runTask.id, event);
+      liveTts.end(runTask.id);
     }
 
     const finishedRun = getRunStatus(runTask.id);

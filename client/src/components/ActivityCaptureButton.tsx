@@ -135,7 +135,8 @@ export function ActivityCaptureButton({
         onError?.('No drag selection or screenshot arrived from the activity daemon.');
       }, timeoutMs);
 
-      const handleCapture = async (message: MessageEvent<string>) => {
+      const handleCapture = async (evt: Event) => {
+        const message = evt as MessageEvent<string>;
         try {
           const event = JSON.parse(message.data) as Record<string, unknown>;
           const trigger = typeof event.trigger === 'string' ? event.trigger : '';
@@ -153,7 +154,7 @@ export function ActivityCaptureButton({
         }
       };
 
-      source.addEventListener('snapshot', handleCapture as EventListener);
+      source.addEventListener('snapshot', handleCapture);
       source.onmessage = handleCapture;
       source.onerror = () => {
         cleanupSelectionWait();

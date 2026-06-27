@@ -158,10 +158,11 @@ function envSeconds(name: string): number | null | undefined {
 
 function commandTimeoutMs(runtime: Exclude<AgentRuntime, 'hermes'>): number | null {
   const runtimeKey = runtime.toUpperCase();
-  const configured = envSeconds(`BEES_${runtimeKey}_TIMEOUT_SECONDS`)
-    ?? envSeconds('BEES_COMMAND_RUNTIME_TIMEOUT_SECONDS');
-  if (configured != null) return configured > 0 ? configured * 1000 : null;
-  if (runtime === 'claude_code') return 90_000;
+  // claude_code tasks can run for hours — only respect an explicit per-runtime override, never the global fallback
+  const configured = envSeconds(`BEES_${runtimeKey}_TIMEOUT_SECONDS`);
+  if (runtime === 'claude_code') return configured != null && configured > 0 ? configured * 1000 : null;
+  const globalConfigured = configured ?? envSeconds('BEES_COMMAND_RUNTIME_TIMEOUT_SECONDS');
+  if (globalConfigured != null) return globalConfigured > 0 ? globalConfigured * 1000 : null;
   return null;
 }
 

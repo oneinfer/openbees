@@ -154,6 +154,12 @@ export function useVoiceRecorder(
       return;
     }
 
+    const totalSamples = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    if (sampleRate > 0 && totalSamples / sampleRate < 0.5) {
+      setError('Recording too short. Hold the button while speaking.');
+      return;
+    }
+
     setIsTranscribing(true);
     const run = onAudio
       ? onAudio(audio)

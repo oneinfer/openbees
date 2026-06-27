@@ -13,15 +13,18 @@ import {
   type ActivityContext,
   type ActivityIntentDecision,
 } from '../../shared/types.js';
+import type { VisibilityParams } from '../organization-access.js';
 
 const stmtAllProjects = db.prepare('SELECT * FROM projects ORDER BY updated_at DESC');
 const stmtGetProject = db.prepare('SELECT * FROM projects WHERE path = ?');
 const stmtDeleteProject = db.prepare('DELETE FROM projects WHERE path = ?');
 const stmtInsertProject = db.prepare(`
-  INSERT INTO projects (path, label, created_at, updated_at)
-  VALUES (@path, @label, @created_at, @updated_at)
+  INSERT INTO projects (path, label, organization_id, creator_developer_id, created_at, updated_at)
+  VALUES (@path, @label, @organization_id, @creator_developer_id, @created_at, @updated_at)
   ON CONFLICT(path) DO UPDATE SET
     label = excluded.label,
+    organization_id = excluded.organization_id,
+    creator_developer_id = excluded.creator_developer_id,
     updated_at = excluded.updated_at
 `);
 const stmtAllTasks = db.prepare('SELECT * FROM tasks ORDER BY updated_at DESC');
@@ -31,12 +34,16 @@ const stmtRecentTaskByDescription = db.prepare('SELECT * FROM tasks WHERE descri
 const stmtTaskIdsByWorkspacePath = db.prepare('SELECT id FROM tasks WHERE workspace_path = ?');
 const stmtInsertTask = db.prepare(`
   INSERT INTO tasks (
-    id, title, description, status, task_kind, task_mode, workspace_path, agent_runtime, agent_model, reasoning_effort,
+    id, title, description, status, task_kind, task_mode, workspace_path,
+    organization_id, creator_developer_id, creator_email, team_id, team_name, assignee_developer_id, assignee_email,
+    agent_runtime, agent_model, reasoning_effort,
     created_at, updated_at, last_agent_response_at, last_viewed_at,
     last_context_used_tokens, last_context_window_tokens
   )
   VALUES (
-    @id, @title, @description, @status, @task_kind, @task_mode, @workspace_path, @agent_runtime, @agent_model, @reasoning_effort,
+    @id, @title, @description, @status, @task_kind, @task_mode, @workspace_path,
+    @organization_id, @creator_developer_id, @creator_email, @team_id, @team_name, @assignee_developer_id, @assignee_email,
+    @agent_runtime, @agent_model, @reasoning_effort,
     @created_at, @updated_at, @last_agent_response_at, @last_viewed_at,
     @last_context_used_tokens, @last_context_window_tokens
   )
@@ -44,6 +51,14 @@ const stmtInsertTask = db.prepare(`
 const stmtDeleteTask = db.prepare('DELETE FROM tasks WHERE id = ?');
 const stmtDeleteTasksByWorkspacePath = db.prepare('DELETE FROM tasks WHERE workspace_path = ?');
 const stmtTouchTask = db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?');
+const stmtClaimLegacyPersonalTasks = db.prepare(`
+  UPDATE tasks
+  SET creator_developer_id = @developer_id,
+      creator_email = COALESCE(creator_email, @email),
+      updated_at = @updated_at
+  WHERE organization_id IS NULL
+    AND creator_developer_id IS NULL
+`);
 const stmtMarkTaskViewed = db.prepare(`
   UPDATE tasks
   SET last_viewed_at = last_agent_response_at
@@ -91,12 +106,19 @@ export function getProject(path: string): Project | undefined {
   return stmtGetProject.get(path) as Project | undefined;
 }
 
-export function saveProject(project: { path: string; label?: string | null }): Project {
+export function saveProject(project: {
+  path: string;
+  label?: string | null;
+  organization_id?: string | null;
+  creator_developer_id?: string | null;
+}): Project {
   const now = Date.now();
   const existing = getProject(project.path);
   stmtInsertProject.run({
     path: project.path,
     label: project.label ?? existing?.label ?? null,
+    organization_id: project.organization_id ?? existing?.organization_id ?? null,
+    creator_developer_id: project.creator_developer_id ?? existing?.creator_developer_id ?? null,
     created_at: existing?.created_at ?? now,
     updated_at: now,
   });
@@ -117,6 +139,49 @@ export function getAllTasks(status?: TaskStatus): Task[] {
   return status ? stmtTasksByStatus.all(status) as Task[] : stmtAllTasks.all() as Task[];
 }
 
+const stmtPersonalTasks = db.prepare(`
+  SELECT * FROM tasks
+  WHERE creator_developer_id = @developerId AND organization_id IS NULL
+  AND (:status IS NULL OR status = :status)
+  ORDER BY updated_at DESC
+`);
+
+const stmtOrgTasksManager = db.prepare(`
+  SELECT * FROM tasks
+  WHERE organization_id = @organizationId
+  AND (:status IS NULL OR status = :status)
+  ORDER BY updated_at DESC
+`);
+
+const stmtOrgTasksMember = db.prepare(`
+  SELECT * FROM tasks
+  WHERE organization_id = @organizationId
+  AND (:status IS NULL OR status = :status)
+  AND (
+    creator_developer_id = @developerId
+    OR assignee_developer_id = @developerId
+    OR (team_id IS NOT NULL AND team_id IN (SELECT value FROM json_each(@teamIdsJson)))
+    OR (team_id IS NULL AND assignee_developer_id IS NULL)
+  )
+  ORDER BY updated_at DESC
+`);
+
+export function getVisibleTasks(params: VisibilityParams, status?: TaskStatus): Task[] {
+  const statusParam = status ?? null;
+  if (!params.organizationId) {
+    return stmtPersonalTasks.all({ developerId: params.developerId, status: statusParam }) as Task[];
+  }
+  if (params.isManager) {
+    return stmtOrgTasksManager.all({ organizationId: params.organizationId, status: statusParam }) as Task[];
+  }
+  return stmtOrgTasksMember.all({
+    organizationId: params.organizationId,
+    developerId: params.developerId,
+    status: statusParam,
+    teamIdsJson: JSON.stringify(Array.from(params.teamIds)),
+  }) as Task[];
+}
+
 export function getTask(id: string): Task | undefined {
   return stmtGetTask.get(id) as Task | undefined;
 }
@@ -132,6 +197,13 @@ export function insertTask(task: {
   task_kind?: TaskKind | null;
   task_mode?: TaskMode | null;
   workspace_path?: string | null;
+  organization_id?: string | null;
+  creator_developer_id?: string | null;
+  creator_email?: string | null;
+  team_id?: string | null;
+  team_name?: string | null;
+  assignee_developer_id?: string | null;
+  assignee_email?: string | null;
   agent_runtime?: AgentRuntime | null;
   agent_model?: string | null;
   reasoning_effort?: ReasoningEffort | null;
@@ -147,6 +219,13 @@ export function insertTask(task: {
     task_kind: task.task_kind ?? 'task',
     task_mode: task.task_mode ?? 'direct',
     workspace_path: task.workspace_path ?? null,
+    organization_id: task.organization_id ?? null,
+    creator_developer_id: task.creator_developer_id ?? null,
+    creator_email: task.creator_email ?? null,
+    team_id: task.team_id ?? null,
+    team_name: task.team_name ?? null,
+    assignee_developer_id: task.assignee_developer_id ?? null,
+    assignee_email: task.assignee_email ?? null,
     agent_runtime: task.agent_runtime ?? null,
     agent_model: task.agent_model ?? null,
     reasoning_effort: task.reasoning_effort ?? null,
@@ -167,6 +246,13 @@ const ALLOWED_UPDATE_FIELDS = new Set<string>([
   'status',
   'task_mode',
   'workspace_path',
+  'organization_id',
+  'creator_developer_id',
+  'creator_email',
+  'team_id',
+  'team_name',
+  'assignee_developer_id',
+  'assignee_email',
   'agent_runtime',
   'agent_model',
   'reasoning_effort',
@@ -183,6 +269,13 @@ type TaskUpdateFields = Pick<
   | 'status'
   | 'task_mode'
   | 'workspace_path'
+  | 'organization_id'
+  | 'creator_developer_id'
+  | 'creator_email'
+  | 'team_id'
+  | 'team_name'
+  | 'assignee_developer_id'
+  | 'assignee_email'
   | 'agent_runtime'
   | 'agent_model'
   | 'reasoning_effort'
@@ -224,6 +317,14 @@ export function updateTask(
 
 export function touchTask(id: string): void {
   stmtTouchTask.run(Date.now(), id);
+}
+
+export function claimLegacyPersonalTasks(developerId: string, email: string | null): number {
+  return stmtClaimLegacyPersonalTasks.run({
+    developer_id: developerId,
+    email,
+    updated_at: Date.now(),
+  }).changes;
 }
 
 export function contextFromTask(task: Task): ContextUsage | null {

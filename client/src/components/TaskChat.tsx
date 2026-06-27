@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
-import { ArrowUp, Loader2, ChevronDown, ChevronRight, Check, Terminal, FileText, FilePenLine, Globe, Code, Wrench, Image as ImageIcon, X } from 'lucide-react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
+import { ArrowUp, Loader2, ChevronDown, ChevronRight, Check, Terminal, FileText, FilePenLine, Globe, Code, Wrench, Image as ImageIcon, X, FolderOpen, GitBranch } from 'lucide-react';
 import { InputToolbar, ContextRing } from './InputToolbar';
 import { VoiceInputButton } from './VoiceInputButton';
 import {
@@ -8,24 +8,53 @@ import {
   composerAttachmentsFromClipboard,
   type ComposerAttachment,
 } from './AttachmentPicker';
-import { ActivityCaptureButton } from './ActivityCaptureButton';
 import { ArtifactViewer, ChatArtifacts, collectChatArtifacts, type ChatArtifact } from './ChatArtifacts';
 import { MarkdownContent } from './MarkdownContent';
 import { useChat, ToolProgressEvent } from '../hooks/useChat';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { handleChatKeyDown } from '../lib/keyboard';
-import { fileViewUrl } from '../lib/api';
+import { fileViewUrl, pickWorkspaceDirectory, startTask, updateCurrentProject } from '../lib/api';
+import { useStore } from '../lib/store';
+import { toErrorMessage } from '../lib/format';
 import type { AgentRunSettings } from '../lib/api';
-import type { ChatAttachment, LiveChatTimelineItem, TaskStatus } from '@shared/types';
+import type { AgentRuntime, ChatAttachment, LiveChatTimelineItem, ReasoningEffort, TaskMode, TaskStatus } from '@shared/types';
 
 interface TaskChatProps {
   taskId: string;
   taskStatus: TaskStatus;
+  taskMode?: TaskMode;
   initialMessage?: string;
   initialSettings?: AgentRunSettings;
   emptyMessage?: string;
   inputPlaceholder?: string;
   workspacePath?: string | null;
+}
+
+interface SavedStartSettings {
+  workspacePath?: string | null;
+  runtime?: AgentRuntime | null;
+  model?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
+  taskMode?: TaskMode;
+}
+
+const START_SETTINGS_STORAGE_KEY = 'bees:startTaskSettings';
+
+function readSavedStartSettings(): SavedStartSettings {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(START_SETTINGS_STORAGE_KEY) ?? '{}') as SavedStartSettings;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSavedStartSettings(settings: SavedStartSettings) {
+  try {
+    localStorage.setItem(START_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Best-effort convenience only.
+  }
 }
 
 function ThinkingBlock({ content, isLive }: { content: string; isLive: boolean }) {
@@ -428,35 +457,59 @@ function ToolCallBlock({ tool }: { tool: ToolProgressEvent }) {
 export function TaskChat({
   taskId,
   taskStatus,
+  taskMode = 'direct',
   initialMessage,
   initialSettings,
   emptyMessage = 'Start a conversation with your assistant.',
   inputPlaceholder = 'Message your assistant...',
   workspacePath,
 }: TaskChatProps) {
+  const savedStartSettings = useMemo(readSavedStartSettings, [taskId]);
   const { messages, isStreaming, thinkingContent, activeTools, context, sendMessage, loadMessages } = useChat();
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<ChatArtifact | null>(null);
   const [selectedAttachment, setSelectedAttachment] = useState<ChatAttachment | null>(null);
   const [loadedTaskId, setLoadedTaskId] = useState<string | null>(null);
+  const [messagesLoadError, setMessagesLoadError] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [captureStatus, setCaptureStatus] = useState<string | null>(null);
-  const [captureError, setCaptureError] = useState<string | null>(null);
+  const currentProjectPath = useStore((s) => s.currentProjectPath);
+  const setCurrentProjectPath = useStore((s) => s.setCurrentProjectPath);
+  const upsertProject = useStore((s) => s.upsertProject);
+  const upsertTask = useStore((s) => s.upsertTask);
+  const [pendingWorkspacePath, setPendingWorkspacePath] = useState(
+    workspacePath ?? savedStartSettings.workspacePath ?? currentProjectPath ?? localStorage.getItem('bees:lastWorkspacePath') ?? '',
+  );
+  const [pendingTaskMode, setPendingTaskMode] = useState<TaskMode>(taskMode ?? savedStartSettings.taskMode ?? 'direct');
+  const [isPickingWorkspace, setIsPickingWorkspace] = useState(false);
+  const [isStartingTask, setIsStartingTask] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
   const startupRef = useRef({ taskId, initialMessage, initialSettings });
   if (startupRef.current.taskId !== taskId) {
     startupRef.current = { taskId, initialMessage, initialSettings };
   }
   const { defaults, runtimeOptions, runtime, setRuntime, modelGroups, runtimeDefaultModel, model, setModel, reasoningEffort, setReasoningEffort, isLoading } = useAgentConfig(
     taskId,
-    startupRef.current.initialSettings,
+    startupRef.current.initialSettings ?? {
+      runtime: savedStartSettings.runtime ?? null,
+      model: savedStartSettings.model ?? null,
+      reasoningEffort: savedStartSettings.reasoningEffort ?? null,
+    },
   );
   const waitingForTaskSettings = isLoading && !startupRef.current.initialSettings;
   const toolbarDefaults = waitingForTaskSettings ? null : defaults;
   const configPending = waitingForTaskSettings || (!defaults && isLoading);
-  const isPendingTask = taskStatus === 'pending';
-  const composerControlsDisabled = isPendingTask || configPending;
-  const sendDisabled = composerControlsDisabled || isStreaming;
+  const isInactiveTask = taskStatus === 'pending' || taskStatus === 'assigned';
+  const messageControlsDisabled = isInactiveTask || configPending;
+  const runtimeControlsDisabled = configPending || isStartingTask;
+  const normalizedPendingWorkspacePath = pendingWorkspacePath.trim();
+  const effectiveRuntime = runtime ?? defaults?.runtime ?? 'hermes';
+  const runtimeMeta = runtimeOptions.find((option) => option.id === effectiveRuntime);
+  const runtimeNeedsSetup = runtimeMeta?.status === 'configure';
+  const planUnsupported = pendingTaskMode === 'plan' && runtimeMeta?.supportsGoals === false;
+  const sendDisabled = isInactiveTask
+    ? runtimeControlsDisabled || !normalizedPendingWorkspacePath || runtimeNeedsSetup || planUnsupported
+    : runtimeControlsDisabled || isStreaming;
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const didInitialScrollRef = useRef(false);
@@ -464,8 +517,10 @@ export function TaskChat({
   useEffect(() => {
     let cancelled = false;
     setLoadedTaskId(null);
+    setMessagesLoadError(null);
     setSelectedArtifact(null);
     setSelectedAttachment(null);
+    setStartError(null);
     didInitialScrollRef.current = false;
     loadMessages(taskId)
       .then((loadedMessages) => {
@@ -474,15 +529,27 @@ export function TaskChat({
         const firstMessage = startupRef.current.initialMessage;
         if (firstMessage) {
           startupRef.current.initialMessage = undefined;
-          if (loadedMessages.length === 0 && taskStatus !== 'pending') {
+          if (loadedMessages.length === 0 && taskStatus !== 'pending' && taskStatus !== 'assigned') {
             sendMessage(taskId, firstMessage, startupRef.current.initialSettings);
           }
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (cancelled) return;
+        setLoadedTaskId(taskId);
+        setMessagesLoadError(toErrorMessage(err, 'Failed to load messages.'));
+      });
     inputRef.current?.focus();
     return () => { cancelled = true; };
   }, [taskId, taskStatus, loadMessages, sendMessage]);
+
+  useEffect(() => {
+    setPendingWorkspacePath(
+      workspacePath ?? savedStartSettings.workspacePath ?? currentProjectPath ?? localStorage.getItem('bees:lastWorkspacePath') ?? '',
+    );
+    setPendingTaskMode(taskMode ?? savedStartSettings.taskMode ?? 'direct');
+    setStartError(null);
+  }, [currentProjectPath, savedStartSettings, taskId, taskMode, workspacePath]);
 
   useLayoutEffect(() => {
     if (loadedTaskId !== taskId || didInitialScrollRef.current) return;
@@ -494,7 +561,68 @@ export function TaskChat({
     didInitialScrollRef.current = true;
   }, [loadedTaskId, messages.length, taskId]);
 
+  const handleChooseWorkspace = useCallback(async () => {
+    if (isPickingWorkspace || isStartingTask) return;
+    setIsPickingWorkspace(true);
+    setStartError(null);
+
+    try {
+      const result = await pickWorkspaceDirectory(normalizedPendingWorkspacePath || null);
+      if (result.path) setPendingWorkspacePath(result.path);
+    } catch (error) {
+      setStartError(toErrorMessage(error, 'Failed to choose project folder'));
+    } finally {
+      setIsPickingWorkspace(false);
+    }
+  }, [isPickingWorkspace, isStartingTask, normalizedPendingWorkspacePath]);
+
+  const handleStartTask = useCallback(async () => {
+    if (!isInactiveTask || sendDisabled) return;
+
+    setIsStartingTask(true);
+    setStartError(null);
+    try {
+      const settings = {
+        workspacePath: normalizedPendingWorkspacePath,
+        runtime: effectiveRuntime,
+        model,
+        reasoningEffort,
+        taskMode: pendingTaskMode,
+      };
+      const result = await startTask(taskId, settings);
+      writeSavedStartSettings(settings);
+      upsertTask(result.task);
+      setCurrentProjectPath(normalizedPendingWorkspacePath);
+      void updateCurrentProject(normalizedPendingWorkspacePath)
+        .then((current) => {
+          if (current.project) upsertProject(current.project);
+        })
+        .catch(() => undefined);
+    } catch (error) {
+      setStartError(toErrorMessage(error, 'Failed to start task'));
+    } finally {
+      setIsStartingTask(false);
+    }
+  }, [
+    effectiveRuntime,
+    isInactiveTask,
+    model,
+    normalizedPendingWorkspacePath,
+    pendingTaskMode,
+    reasoningEffort,
+    sendDisabled,
+    setCurrentProjectPath,
+    taskId,
+    upsertProject,
+    upsertTask,
+  ]);
+
   const handleSubmit = useCallback(async () => {
+    if (isInactiveTask) {
+      await handleStartTask();
+      return;
+    }
+
     const text = input.trim();
     const files = attachments.map((attachment) => attachment.file);
     if ((!text && files.length === 0) || sendDisabled) return;
@@ -505,7 +633,7 @@ export function TaskChat({
       if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
     }
     await sendMessage(taskId, messageText, { runtime, model, reasoningEffort }, files);
-  }, [attachments, input, sendDisabled, taskId, sendMessage, runtime, model, reasoningEffort]);
+  }, [attachments, handleStartTask, input, isInactiveTask, sendDisabled, taskId, sendMessage, runtime, model, reasoningEffort]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => handleChatKeyDown(e, handleSubmit),
@@ -513,14 +641,14 @@ export function TaskChat({
   );
 
   const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (composerControlsDisabled) return;
+    if (messageControlsDisabled) return;
 
     const pastedAttachments = composerAttachmentsFromClipboard(event);
     if (pastedAttachments.length === 0) return;
 
     if (!event.clipboardData.getData('text/plain')) event.preventDefault();
     setAttachments((current) => [...current, ...pastedAttachments]);
-  }, [composerControlsDisabled]);
+  }, [messageControlsDisabled]);
 
   const handleVoiceTranscript = useCallback((text: string) => {
     const target = inputRef.current;
@@ -541,16 +669,6 @@ export function TaskChat({
     });
   }, [input]);
 
-  const handleCapturedText = useCallback((text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    setInput((current) => {
-      if (current.includes(trimmed)) return current;
-      return current.trim() ? `${current.trimEnd()}\n\n${trimmed}` : trimmed;
-    });
-    setCaptureError(null);
-    requestAnimationFrame(() => inputRef.current?.focus());
-  }, []);
 
   return (
     <div className="flex w-full flex-1 min-h-0">
@@ -563,10 +681,13 @@ export function TaskChat({
           className="h-full overflow-y-auto px-4 sm:px-6 py-4"
         >
           <div className={`${CHAT_COLUMN_CLASS} space-y-3`}>
-            {messages.length === 0 && (
+            {messages.length === 0 && messagesLoadError && (
+              <p className="text-sm text-red-400 dark:text-red-500 text-center py-12">{messagesLoadError}</p>
+            )}
+            {messages.length === 0 && !messagesLoadError && (
               <p className="text-sm text-zinc-400 dark:text-zinc-500 text-center py-12">
-                {isPendingTask
-                  ? 'Move this task to In Progress to activate the assistant.'
+                {isInactiveTask
+                  ? 'Choose the folder and AI settings below, then start this task.'
                   : emptyMessage}
               </p>
             )}
@@ -641,10 +762,32 @@ export function TaskChat({
       </div>
 
       <div className="px-4 sm:px-6 py-4 border-t border-zinc-100 dark:border-zinc-800">
-        <div className={`${CHAT_COLUMN_CLASS} rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800`}>
+        <div className="w-full max-w-[800px] mx-auto rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800">
+          {isInactiveTask && normalizedPendingWorkspacePath && (
+            <div className="flex items-start justify-between gap-3 border-b border-zinc-100 bg-zinc-50/70 px-5 py-3 dark:border-zinc-700/70 dark:bg-zinc-900/40">
+              <div className="min-w-0">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+                  Working directory
+                </p>
+                <p className="mt-1 truncate font-mono text-xs text-zinc-700 dark:text-zinc-200" title={normalizedPendingWorkspacePath}>
+                  {normalizedPendingWorkspacePath}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingWorkspacePath('')}
+                disabled={runtimeControlsDisabled || isPickingWorkspace}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700/70 dark:hover:text-zinc-200"
+                aria-label="Clear working directory"
+                title="Clear working directory"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
           <AttachmentPreviewList
             attachments={attachments}
-            disabled={composerControlsDisabled}
+            disabled={messageControlsDisabled}
             onChange={setAttachments}
           />
           <textarea
@@ -653,31 +796,40 @@ export function TaskChat({
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder={isPendingTask ? 'Move this task to In Progress to activate it...' : inputPlaceholder}
+            placeholder={isInactiveTask ? 'Choose the folder and AI settings below, then start this task.' : inputPlaceholder}
             rows={2}
-            disabled={isPendingTask}
+            disabled={isInactiveTask}
             className="w-full resize-none bg-transparent px-5 pt-3 pb-1 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none leading-relaxed"
           />
           <div className="flex items-center justify-between px-4 pb-3">
-            <div className="flex min-w-0 items-center gap-2 flex-wrap">
+            <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
               <AttachmentPicker
                 attachments={attachments}
-                disabled={composerControlsDisabled}
+                disabled={messageControlsDisabled}
                 onChange={setAttachments}
               />
-              <ActivityCaptureButton
-                disabled={composerControlsDisabled}
-                inputText={input}
-                onCapture={(nextAttachments) => setAttachments((current) => [...current, ...nextAttachments])}
-                onTextCapture={handleCapturedText}
-                onStatus={setCaptureStatus}
-                onError={setCaptureError}
-              />
               <VoiceInputButton
-                disabled={composerControlsDisabled}
+                disabled={messageControlsDisabled}
                 onTranscript={handleVoiceTranscript}
                 onError={setVoiceError}
               />
+              {isInactiveTask && (
+                <button
+                  type="button"
+                  onClick={() => setPendingTaskMode((current) => current === 'plan' ? 'direct' : 'plan')}
+                  disabled={runtimeControlsDisabled}
+                  aria-pressed={pendingTaskMode === 'plan'}
+                  title={pendingTaskMode === 'plan' ? 'Switch to direct mode' : 'Switch to plan mode'}
+                  className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    pendingTaskMode === 'plan'
+                      ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300 dark:hover:bg-amber-900/40'
+                      : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700/70'
+                  }`}
+                >
+                  <GitBranch size={12} className="shrink-0" />
+                  <span>Plan mode</span>
+                </button>
+              )}
               <InputToolbar
                 runtime={runtime}
                 model={model}
@@ -686,38 +838,64 @@ export function TaskChat({
                 runtimeDefaultModel={runtimeDefaultModel}
                 runtimeOptions={runtimeOptions}
                 modelGroups={modelGroups}
-                disabled={composerControlsDisabled}
+                disabled={runtimeControlsDisabled}
                 onRuntimeChange={setRuntime}
                 onModelChange={setModel}
                 onReasoningEffortChange={setReasoningEffort}
               />
+              {isInactiveTask && (
+                <button
+                  type="button"
+                  onClick={handleChooseWorkspace}
+                  disabled={runtimeControlsDisabled || isPickingWorkspace}
+                  className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700/70"
+                  aria-label="Choose working directory"
+                  title="Choose working directory"
+                >
+                  {isPickingWorkspace ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+                  <span>Choose Folder</span>
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-2">
               {context && <ContextRing context={context} />}
               <button
                 onClick={handleSubmit}
-                disabled={(!input.trim() && attachments.length === 0) || sendDisabled}
+                disabled={isInactiveTask ? sendDisabled : ((!input.trim() && attachments.length === 0) || sendDisabled)}
+                aria-label={isInactiveTask ? 'Start task' : 'Send message'}
+                title={isInactiveTask ? 'Start task' : 'Send message'}
                 className="p-2 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 disabled:opacity-30 hover:bg-zinc-700 dark:hover:bg-zinc-300 transition-colors"
               >
-                <ArrowUp size={14} />
+                {isStartingTask ? <Loader2 size={14} className="animate-spin" /> : <ArrowUp size={14} />}
               </button>
             </div>
           </div>
+          {isInactiveTask && !normalizedPendingWorkspacePath && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-amber-600 dark:text-amber-300">Choose a project folder before starting.</p>
+            </div>
+          )}
+          {isInactiveTask && runtimeNeedsSetup && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-amber-600 dark:text-amber-300">Selected runtime needs setup before it can run.</p>
+            </div>
+          )}
+          {isInactiveTask && planUnsupported && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-red-500 dark:text-red-400">Plan mode is not available for this runtime.</p>
+            </div>
+          )}
+          {startError && (
+            <div className="px-4 pb-3">
+              <p className="text-xs text-red-500 dark:text-red-400">{startError}</p>
+            </div>
+          )}
           {voiceError && (
             <div className="px-4 pb-3">
               <p className="text-xs text-red-500 dark:text-red-400">{voiceError}</p>
             </div>
           )}
-          {captureError && (
-            <div className="px-4 pb-3">
-              <p className="text-xs text-red-500 dark:text-red-400">{captureError}</p>
-            </div>
-          )}
-          {captureStatus && (
-            <div className="px-4 pb-3">
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">{captureStatus}</p>
-            </div>
-          )}
+
         </div>
       </div>
       </div>

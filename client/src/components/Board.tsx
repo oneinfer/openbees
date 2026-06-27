@@ -16,31 +16,35 @@ import { STATUS_META } from '../lib/constants';
 import { useStore, optimisticMoveTask } from '../lib/store';
 import { createTask, deleteTask, moveTask } from '../lib/api';
 import { toErrorMessage } from '../lib/format';
-import { isBoardTask } from '../lib/taskState';
+import { isBoardTask, taskStatusesForScope } from '../lib/taskState';
+import { useOrganizations } from '../auth/OrganizationContext';
 import { primeTaskCreatedNotifications } from '../lib/taskNotification';
 import { Column } from './Column';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
+import { StartTaskDialog } from './StartTaskDialog';
 import { TaskCardOverlay } from './TaskCard';
 
 const dropAnimation = {
   duration: 200,
   easing: 'cubic-bezier(0.25, 1, 0.5, 1)',
 };
-
 export function Board() {
   const navigate = useNavigate();
   const tasks = useStore((s) => s.tasks);
   const streamingTaskIds = useStore((s) => s.streamingTaskIds);
   const upsertTask = useStore((s) => s.upsertTask);
   const removeTask = useStore((s) => s.removeTask);
+  const { selectedOrganizationId } = useOrganizations();
+  const boardStatuses = useMemo(() => taskStatusesForScope(selectedOrganizationId), [selectedOrganizationId]);
   const grouped = useMemo(() => {
-    const buckets: Record<TaskStatus, Task[]> = { pending: [], in_progress: [], in_review: [], done: [] };
+    const buckets = Object.fromEntries(TASK_STATUSES.map((status) => [status, [] as Task[]])) as unknown as Record<TaskStatus, Task[]>;
     for (const t of tasks.filter(isBoardTask)) {
-      if (t.status in buckets) buckets[t.status].push(t);
+      const status = (t.status === 'assigned' && !selectedOrganizationId) ? 'pending' : t.status;
+      if (status in buckets) buckets[status].push(t);
     }
     for (const s of TASK_STATUSES) buckets[s].sort((a, b) => b.updated_at - a.updated_at);
     return buckets;
-  }, [tasks]);
+  }, [tasks, selectedOrganizationId]);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [deleteAllStatus, setDeleteAllStatus] = useState<TaskStatus | null>(null);
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
@@ -49,6 +53,12 @@ export function Board() {
   const [flushPendingError, setFlushPendingError] = useState<string | null>(null);
   const [isCreatingPullRequestTask, setIsCreatingPullRequestTask] = useState(false);
   const [pullRequestError, setPullRequestError] = useState<string | null>(null);
+  const [startQueue, setStartQueue] = useState<{
+    tasks: Task[];
+    index: number;
+    source: 'single' | 'flush';
+    navigateOnStarted?: boolean;
+  } | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -68,10 +78,54 @@ export function Board() {
     const task = (active.data.current as { task: Task })?.task;
     if (!task || task.status === targetStatus) return;
 
+    if ((task.status === 'pending' || task.status === 'assigned') && targetStatus === 'in_progress') {
+      if (task.organization_id) {
+        setStartQueue({ tasks: [task], index: 0, source: 'single' });
+      } else {
+        await optimisticMoveTask(task, targetStatus, upsertTask, moveTask);
+        navigate(`/tasks/${task.id}`);
+      }
+      return;
+    }
+
     await optimisticMoveTask(task, targetStatus, upsertTask, moveTask);
   }
 
-  async function handleFlushPending() {
+  function handleRequestStart(task: Task) {
+    if (task.organization_id) {
+      setStartQueue({ tasks: [task], index: 0, source: 'single' });
+    } else {
+      void optimisticMoveTask(task, 'in_progress', upsertTask, moveTask).then(() => {
+        navigate(`/tasks/${task.id}`);
+      });
+    }
+  }
+
+  function closeStartQueue() {
+    setStartQueue(null);
+    setIsFlushingPending(false);
+  }
+
+  function advanceStartQueue() {
+    setStartQueue((current) => {
+      if (!current) return null;
+      const nextIndex = current.index + 1;
+      if (nextIndex >= current.tasks.length) {
+        setIsFlushingPending(false);
+        return null;
+      }
+      return { ...current, index: nextIndex };
+    });
+  }
+
+  function handleStartedTask(task: Task) {
+    upsertTask(task);
+    const navigateToStarted = startQueue?.navigateOnStarted;
+    advanceStartQueue();
+    if (navigateToStarted) navigate(`/tasks/${task.id}`);
+  }
+
+  function handleFlushPending() {
     if (isFlushingPending) return;
 
     const targets = grouped.pending;
@@ -79,24 +133,17 @@ export function Board() {
 
     setIsFlushingPending(true);
     setFlushPendingError(null);
-    try {
-      const results = await Promise.allSettled(targets.map(async (task) => {
-        const optimisticTask = { ...task, status: 'in_progress' as TaskStatus, updated_at: Date.now() };
-        upsertTask(optimisticTask);
-        try {
-          const result = await moveTask(task.id, 'in_progress');
-          upsertTask(result.task);
-        } catch (error) {
-          upsertTask(task);
-          throw error;
-        }
-      }));
 
-      const failed = results.filter((result) => result.status === 'rejected').length;
-      if (failed > 0) {
-        setFlushPendingError(`Failed to flush ${failed} task${failed === 1 ? '' : 's'}.`);
-      }
-    } finally {
+    const personalTasks = targets.filter((t) => !t.organization_id);
+    const orgTasks = targets.filter((t) => t.organization_id);
+
+    for (const task of personalTasks) {
+      void optimisticMoveTask(task, 'in_progress', upsertTask, moveTask);
+    }
+
+    if (orgTasks.length > 0) {
+      setStartQueue({ tasks: orgTasks, index: 0, source: 'flush' });
+    } else {
       setIsFlushingPending(false);
     }
   }
@@ -110,7 +157,6 @@ export function Board() {
     const workspacePaths = Array.from(
       new Set(targets.map((task) => task.workspace_path).filter((path): path is string => Boolean(path))),
     );
-    const workspacePath = workspacePaths.length === 1 ? workspacePaths[0] : null;
     const taskList = targets
       .map((task) => {
         const details = [
@@ -141,18 +187,16 @@ export function Board() {
       const created = await createTask(
         description,
         'Create pull request',
-        workspacePath,
         undefined,
         undefined,
         undefined,
-        'direct',
+        undefined,
+        undefined,
         undefined,
         'task',
       );
       upsertTask(created.task);
-      const activated = await moveTask(created.task.id, 'in_progress');
-      upsertTask(activated.task);
-      navigate(`/tasks/${activated.task.id}`);
+      setStartQueue({ tasks: [created.task], index: 0, source: 'single', navigateOnStarted: true });
     } catch (error) {
       setPullRequestError(toErrorMessage(error, 'Failed to create pull request task'));
     } finally {
@@ -216,21 +260,24 @@ export function Board() {
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex gap-6 p-6 overflow-x-auto flex-1 min-h-0">
-        {TASK_STATUSES.map((status, index) => (
-          <Column
-            key={status}
-            status={status}
-            tasks={grouped[status]}
-            streamingTaskIds={streamingTaskIds}
-            isLast={index === TASK_STATUSES.length - 1}
-            onRequestDeleteAll={handleRequestDeleteAll}
-            onFlushPending={handleFlushPending}
-            isFlushingPending={isFlushingPending}
-            onCreatePullRequestWithAi={handleCreatePullRequestWithAi}
-            isCreatingPullRequestTask={isCreatingPullRequestTask}
-          />
-        ))}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 gap-6 overflow-x-auto p-6">
+          {boardStatuses.map((status, index) => (
+            <Column
+              key={status}
+              status={status}
+              tasks={grouped[status]}
+              streamingTaskIds={streamingTaskIds}
+              isLast={index === boardStatuses.length - 1}
+              onRequestDeleteAll={handleRequestDeleteAll}
+              onFlushPending={handleFlushPending}
+              isFlushingPending={isFlushingPending}
+              onCreatePullRequestWithAi={handleCreatePullRequestWithAi}
+              isCreatingPullRequestTask={isCreatingPullRequestTask}
+              onRequestStart={handleRequestStart}
+            />
+          ))}
+        </div>
       </div>
       {flushPendingError && (
         <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 shadow-lg dark:border-red-900/70 dark:bg-red-950 dark:text-red-300">
@@ -263,6 +310,17 @@ export function Board() {
           error={bulkDeleteError}
           onConfirm={handleConfirmDeleteAll}
           onCancel={handleCancelDeleteAll}
+        />
+      )}
+      {startQueue && startQueue.tasks[startQueue.index] && (
+        <StartTaskDialog
+          key={startQueue.tasks[startQueue.index].id}
+          task={startQueue.tasks[startQueue.index]}
+          title={startQueue.source === 'flush' ? 'Flush pending task' : 'Start task'}
+          queueLabel={startQueue.source === 'flush' ? `${startQueue.index + 1} of ${startQueue.tasks.length}` : undefined}
+          onStarted={handleStartedTask}
+          onSkip={startQueue.source === 'flush' ? advanceStartQueue : undefined}
+          onClose={closeStartQueue}
         />
       )}
     </DndContext>

@@ -33,6 +33,7 @@ function runState(run: LiveChatRun): TaskRunState {
   return {
     taskId: run.taskId,
     runId: run.runId,
+    kind: run.kind,
     status: run.status,
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
@@ -171,6 +172,7 @@ export function startRun(taskId: string, sessionId: string, userContent: string)
     taskId,
     runId: uuid(),
     sessionId,
+    kind: 'chat',
     status: 'streaming',
     startedAt: now,
     updatedAt: now,
