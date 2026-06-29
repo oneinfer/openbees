@@ -288,6 +288,7 @@ export function useChat() {
   }, [publishState]);
 
   const refreshCommittedMessages = useCallback(async (taskId: string, finishedRunId?: string) => {
+    if (taskIdRef.current !== taskId) return;
     try {
       const { messages: msgs, context: persistedContext } = await fetchMessages(taskId);
       if (taskIdRef.current !== taskId) return;

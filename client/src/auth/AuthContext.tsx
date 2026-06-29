@@ -22,6 +22,7 @@ import {
   exchangeSSOToken,
   type AuthResponse,
   verifyDeveloperRegistration,
+  decodeJwtPayload,
 } from '../lib/auth-api';
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
@@ -102,6 +103,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void logoutAuth().catch(() => undefined);
     clearLocalAuthState();
   }, [clearLocalAuthState]);
+
+  // Proactive token refresh — fires 5 minutes before the access token expires so
+  // the user never hits a 401 due to expiry. Re-schedules automatically after each
+  // successful refresh (because accessToken state changes, re-running this effect).
+  useEffect(() => {
+    if (status !== 'authenticated') return;
+
+    const token = (accessToken && accessToken !== 'cookie') ? accessToken : getStoredAccessToken();
+    let delayMs = 55 * 60 * 1000; // fallback: 55 min (for cookie-only tokens)
+
+    if (token) {
+      const payload = decodeJwtPayload(token);
+      const exp = typeof payload.exp === 'number' ? payload.exp : null;
+      if (exp) {
+        const secsUntilExpiry = exp - Date.now() / 1000;
+        delayMs = Math.max(30_000, (secsUntilExpiry - 5 * 60) * 1000);
+      }
+    }
+
+    const timerId = window.setTimeout(async () => {
+      try {
+        const response = await refreshAuth();
+        applySession(response);
+      } catch {
+        clearLocalAuthState();
+      }
+    }, delayMs);
+
+    return () => window.clearTimeout(timerId);
+  }, [status, accessToken, applySession, clearLocalAuthState]);
 
   useEffect(() => {
     let cancelled = false;

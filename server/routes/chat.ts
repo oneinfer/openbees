@@ -143,6 +143,7 @@ chatRouter.post('/:id/messages', attachmentUploadMiddleware, async (req, res) =>
       }
       const { startEnterpriseTaskRun } = await import('../enterprise-runner.js');
       const run = await startEnterpriseTaskRun(req, localTask, content);
+      if (!run?.runId) throw new Error('Enterprise run returned invalid result');
       return res.status(202).json({ runId: run.runId, run });
     } catch (error) {
       const status = (error as { status?: number }).status;
@@ -204,7 +205,8 @@ chatRouter.post('/:id/messages', attachmentUploadMiddleware, async (req, res) =>
     const run = startTaskRun(runTask, messageContent);
     res.status(202).json({ runId: run.runId, run });
   } catch (error) {
-    res.status(409).json({ error: toErrorMessage(error, 'Failed to start task run') });
+    const isConflict = error instanceof Error && error.message.includes('already has a message in progress');
+    res.status(isConflict ? 409 : 500).json({ error: toErrorMessage(error, 'Failed to start task run') });
   }
 });
 
@@ -222,15 +224,26 @@ chatRouter.get('/:id/live', (req, res) => {
   loadOrganizationAccess(req)
     .then((organizationContext) => {
       const task = requireTaskVisible(getTask(req.params.id), organizationContext);
-      if (!task) return res.status(404).json({ error: 'Task not found' });
 
       initSSE(res);
+
+      if (!task) {
+        res.write(`data: ${JSON.stringify({ type: 'error', error: 'Task not found' })}\n\n`);
+        res.end();
+        return;
+      }
+
       subscribe(task.id, res);
 
       const run = getRun(task.id);
       if (run) sendSnapshot(res, run);
     })
     .catch((error) => {
-      res.status(403).json({ error: toErrorMessage(error, 'Organization access denied') });
+      if (res.headersSent) {
+        res.write(`data: ${JSON.stringify({ type: 'error', error: toErrorMessage(error, 'Organization access denied') })}\n\n`);
+        res.end();
+      } else {
+        res.status(403).json({ error: toErrorMessage(error, 'Organization access denied') });
+      }
     });
 });

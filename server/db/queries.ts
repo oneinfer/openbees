@@ -491,7 +491,9 @@ export function insertActivityContext(context: {
     created_at: now,
     updated_at: now,
   });
-  return getActivityContext(id) as ActivityContext;
+  const result = getActivityContext(id);
+  if (!result) throw new Error(`Failed to retrieve inserted activity context ${id}`);
+  return result;
 }
 
 export function updateActivityContextPromotedTask(id: string, taskId: string | null): ActivityContext | undefined {

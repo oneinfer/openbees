@@ -810,26 +810,37 @@ class ActivityRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         try:
+            # Flush headers immediately — wfile is buffered, so without this the client
+            # receives no data until the first keep-alive fires 15 s later, which causes
+            # undici to destroy the socket and report UND_ERR_SOCKET ("terminated").
+            try:
+                self.wfile.flush()
+            except OSError:
+                return
             latest = self.daemon_ref.store.latest()
             if latest:
                 try:
                     self.wfile.write(f"event: snapshot\ndata: {json.dumps(latest, ensure_ascii=False)}\n\n".encode("utf-8"))
                     self.wfile.flush()
-                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                except OSError:
                     return
+                except Exception:
+                    pass  # skip if the stored event can't be serialised
             while not self.daemon_ref.stop_event.is_set():
                 try:
                     event = client_queue.get(timeout=15)
                     self.wfile.write(f"event: snapshot\ndata: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8"))
                 except queue.Empty:
                     self.wfile.write(b": keep-alive\n\n")
-                try:
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
-                    return
                 except OSError:
                     return
-        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                except Exception:
+                    continue  # skip malformed events, don't flush
+                try:
+                    self.wfile.flush()
+                except OSError:
+                    return
+        except OSError:
             return
         finally:
             self.daemon_ref.remove_sse_client(client_queue)

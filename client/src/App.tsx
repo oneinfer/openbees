@@ -72,6 +72,11 @@ function OrganizationRoute() {
     selectedOrganization,
     selectOrganization,
   } = useOrganizations();
+  const wasAuthenticatedRef = useRef(false);
+
+  if (status === 'authenticated') {
+    wasAuthenticatedRef.current = true;
+  }
 
   useEffect(() => {
     if (
@@ -85,7 +90,13 @@ function OrganizationRoute() {
   }, [organizationStatus, organizations, selectOrganization, selectedOrganization, status]);
 
   if (status === 'loading') return <LoadingScreen />;
-  if (status === 'unauthenticated') return <EnterpriseLoginRedirect />;
+  if (status === 'unauthenticated') {
+    // After logout (was authenticated this session) → stay in app at new task page.
+    // Fresh visit with no session → redirect to enterprise login.
+    return wasAuthenticatedRef.current
+      ? <Navigate to="/tasks/new" replace />
+      : <EnterpriseLoginRedirect />;
+  }
   if (organizationStatus === 'loading' || organizationStatus === 'idle') return <LoadingScreen />;
   if (organizationStatus === 'error') return <OrganizationGate mode="error" />;
   if (organizations.length === 0) return <OrganizationGate mode="create" />;
