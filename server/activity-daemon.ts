@@ -654,14 +654,26 @@ class ActivityDaemonService {
     const connectedAt = Date.now();
     this.eventStreamAbort = controller;
 
-    void this.consumeEventStream(controller, connectedAt).catch((error) => {
-      if (controller.signal.aborted || !this.enabled()) return;
-      console.warn(`[activity-daemon] activity event stream disconnected: ${formatError(error)}`);
+    const scheduleReconnect = () => {
       this.eventStreamReconnectTimer = setTimeout(() => {
         this.eventStreamReconnectTimer = null;
         if (this.enabled()) this.startEventSubscription();
       }, 2000);
-    });
+    };
+
+    void this.consumeEventStream(controller, connectedAt)
+      .then(() => {
+        if (controller.signal.aborted || !this.enabled()) return;
+        scheduleReconnect();
+      })
+      .catch((error) => {
+        if (controller.signal.aborted || !this.enabled()) return;
+        const msg = formatError(error);
+        if (msg !== 'terminated') {
+          console.warn(`[activity-daemon] activity event stream disconnected: ${msg}`);
+        }
+        scheduleReconnect();
+      });
   }
 
   private stopEventSubscription(): void {
@@ -683,7 +695,7 @@ class ActivityDaemonService {
 
     while (!controller.signal.aborted) {
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) return;
       buffer += decoder.decode(value, { stream: true });
 
       let separatorIndex = this.sseSeparatorIndex(buffer);

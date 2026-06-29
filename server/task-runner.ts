@@ -100,20 +100,20 @@ async function consumeChatRun(
     if (finishedRun) broadcast({ type: 'task_run_updated', run: finishedRun });
 
     if (sawDone && finishedRun?.status === 'done') {
-      const responseAt = Date.now();
-      const updated = recordAgentResponse(runTask.id, responseAt, doneContext ?? null);
-      if (!updated) {
-        finishRun(runTask.id, DONE_SNAPSHOT_TTL_MS, runId);
-        return;
+      try {
+        const responseAt = Date.now();
+        const updated = recordAgentResponse(runTask.id, responseAt, doneContext ?? null);
+        if (updated) {
+          broadcast({ type: 'task_updated', task: updated });
+          if (updated.agent_runtime && updated.agent_runtime !== 'hermes') {
+            appendTaskMessage(runTask.id, 'user', content, null, startedAt);
+            appendTaskMessage(runTask.id, 'assistant', responseText, thinkingText, responseAt);
+          }
+          void judgeTaskCompletion(updated, responseText, responseAt);
+        }
+      } catch {
+        // recordAgentResponse failure is non-critical; proceed to finishRun
       }
-
-      broadcast({ type: 'task_updated', task: updated });
-      if (updated.agent_runtime && updated.agent_runtime !== 'hermes') {
-        appendTaskMessage(runTask.id, 'user', content, null, startedAt);
-        appendTaskMessage(runTask.id, 'assistant', responseText, thinkingText, responseAt);
-      }
-
-      void judgeTaskCompletion(updated, responseText, responseAt);
     } else {
       touchTask(runTask.id);
     }

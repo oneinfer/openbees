@@ -1,4 +1,4 @@
-import { CSRF_TOKEN_COOKIE_NAME, getStoredAccessToken, getStoredRefreshToken, type DeveloperProfile } from './auth-storage';
+import { CSRF_TOKEN_COOKIE_NAME, getStoredAccessToken, getStoredRefreshToken, storeAuthSession, type DeveloperProfile } from './auth-storage';
 
 const AUTH_REQUEST_TIMEOUT_MS = 35_000;
 
@@ -127,7 +127,7 @@ export interface TeamMemberResponse {
   created_at: string;
 }
 
-function decodeJwtPayload(token: string): Record<string, unknown> {
+export function decodeJwtPayload(token: string): Record<string, unknown> {
   const payload = token.split('.')[1];
   if (!payload) return {};
   try {
@@ -146,7 +146,44 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   }
 }
 
-async function authRequest<T>(path: string, init?: RequestInit): Promise<T> {
+// Singleton promise so concurrent 401s don't fire multiple /refresh calls.
+let activeRefreshPromise: Promise<string | null> | null = null;
+
+async function tryRefreshToken(): Promise<string | null> {
+  if (activeRefreshPromise) return activeRefreshPromise;
+  activeRefreshPromise = (async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 15_000);
+    try {
+      const refreshToken = getStoredRefreshToken();
+      const res = await fetch(`${LOCAL_API_BASE}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        ...(refreshToken ? { body: JSON.stringify({ refresh_token: refreshToken }) } : {}),
+        signal: controller.signal,
+      });
+      if (!res.ok) return null;
+      const data = await res.json() as AuthResponse;
+      if (data.access_token && data.developer_id) {
+        storeAuthSession(data.access_token, data.refresh_token ?? null, {
+          developer_id: data.developer_id,
+          email: data.email ?? null,
+          first_name: data.first_name ?? null,
+          last_name: data.last_name ?? null,
+        });
+      }
+      return data.access_token ?? null;
+    } catch {
+      return null;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  })().finally(() => { activeRefreshPromise = null; });
+  return activeRefreshPromise;
+}
+
+async function authRequest<T>(path: string, init?: RequestInit, isRetry = false): Promise<T> {
   const { headers: extraHeaders, signal: _signal, ...rest } = init ?? {};
   const method = (rest.method || 'GET').toUpperCase();
   const headers = new Headers(extraHeaders);
@@ -186,6 +223,11 @@ async function authRequest<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
+    // On 401, attempt a silent token refresh and retry the original request once.
+    if (res.status === 401 && !isRetry) {
+      const newToken = await tryRefreshToken();
+      if (newToken) return authRequest<T>(path, init, true);
+    }
     const body = await res.json().catch(() => ({}));
     const detail = isRecord(body) ? body.detail : undefined;
     const message = typeof detail === 'string'

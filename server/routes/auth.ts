@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { randomBytes } from 'node:crypto';
 import type { Request, Response } from 'express';
-import { signJwt, resolveJwtPayload, tokenFromRequest } from '../auth.js';
+import { signJwt, resolveJwtPayload, tokenFromRequest, verifyJwtIgnoreExpiry, parseCookies } from '../auth.js';
 import { isEnterpriseMode } from '../deployment-config.js';
 
 export const router = Router();
 
 const ACCESS_EXPIRE_SECONDS = parseInt(process.env.ACCESS_TOKEN_EXPIRE_MINUTES || '60', 10) * 60;
+const REFRESH_EXPIRE_SECONDS = parseInt(process.env.REFRESH_TOKEN_EXPIRE_DAYS || '30', 10) * 24 * 60 * 60;
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
 const DEFAULT_ONEINFER_API_BASE_URL = 'http://localhost:8001/api/v1';
 const AUTH_UPSTREAM_TIMEOUT_MS = 30_000;
@@ -19,20 +20,36 @@ function oneInferBaseUrl(): string {
   ).replace(/\/$/, '');
 }
 
-function setAuthCookies(res: Response, accessToken: string): void {
+function buildAccessToken(sub: string, email: unknown, firstName: unknown, lastName: unknown): string {
+  const now = Math.floor(Date.now() / 1000);
+  return signJwt({ sub, email, first_name: firstName, last_name: lastName, type: 'access', iat: now, exp: now + ACCESS_EXPIRE_SECONDS });
+}
+
+function buildRefreshToken(sub: string, email: unknown, firstName: unknown, lastName: unknown): string {
+  const now = Math.floor(Date.now() / 1000);
+  return signJwt({ sub, email, first_name: firstName, last_name: lastName, type: 'refresh', iat: now, exp: now + REFRESH_EXPIRE_SECONDS });
+}
+
+function setAuthCookies(res: Response, accessToken: string, refreshToken?: string): void {
   const csrfToken = randomBytes(32).toString('hex');
-  const cookieOptions = {
-    secure: COOKIE_SECURE,
-    sameSite: 'lax' as const,
-    maxAge: ACCESS_EXPIRE_SECONDS * 1000,
-  };
-  res.cookie('bees_access_token', accessToken, { ...cookieOptions, httpOnly: true });
-  res.cookie('bees_csrf_token', csrfToken, { ...cookieOptions, httpOnly: false });
+  const accessOptions = { secure: COOKIE_SECURE, sameSite: 'lax' as const, maxAge: ACCESS_EXPIRE_SECONDS * 1000 };
+  const refreshOptions = { secure: COOKIE_SECURE, sameSite: 'lax' as const, maxAge: REFRESH_EXPIRE_SECONDS * 1000, httpOnly: true };
+  res.cookie('bees_access_token', accessToken, { ...accessOptions, httpOnly: true });
+  res.cookie('bees_csrf_token', csrfToken, { ...accessOptions, httpOnly: false });
+  if (refreshToken) res.cookie('bees_refresh_token', refreshToken, refreshOptions);
 }
 
 function clearAuthCookies(res: Response): void {
   res.clearCookie('bees_access_token');
   res.clearCookie('bees_csrf_token');
+  res.clearCookie('bees_refresh_token');
+}
+
+function refreshTokenFromRequest(req: Request): string | null {
+  const cookies = parseCookies(req.header('cookie') ?? '');
+  if (cookies.bees_refresh_token) return cookies.bees_refresh_token;
+  const body = req.body as Record<string, unknown>;
+  return typeof body?.refresh_token === 'string' ? body.refresh_token : null;
 }
 
 async function proxyToUpstream(req: Request, res: Response, path: string): Promise<void> {
@@ -161,24 +178,19 @@ router.post('/developer/google-login', async (req, res) => {
   const developerId = typeof tokenInfo.sub === 'string' ? tokenInfo.sub : null;
   if (!email || !developerId) { res.status(401).json({ detail: 'Google credential missing required fields' }); return; }
 
-  const now = Math.floor(Date.now() / 1000);
-  const accessToken = signJwt({
-    sub: developerId,
-    email,
-    first_name: typeof tokenInfo.given_name === 'string' ? tokenInfo.given_name : null,
-    last_name: typeof tokenInfo.family_name === 'string' ? tokenInfo.family_name : null,
-    iat: now,
-    exp: now + ACCESS_EXPIRE_SECONDS,
-  });
+  const firstName = typeof tokenInfo.given_name === 'string' ? tokenInfo.given_name : null;
+  const lastName = typeof tokenInfo.family_name === 'string' ? tokenInfo.family_name : null;
+  const accessToken = buildAccessToken(developerId, email, firstName, lastName);
+  const refreshToken = buildRefreshToken(developerId, email, firstName, lastName);
 
-  setAuthCookies(res, accessToken);
+  setAuthCookies(res, accessToken, refreshToken);
   res.json({
     developer_id: developerId,
     email,
-    first_name: tokenInfo.given_name ?? null,
-    last_name: tokenInfo.family_name ?? null,
+    first_name: firstName,
+    last_name: lastName,
     access_token: accessToken,
-    refresh_token: null,
+    refresh_token: refreshToken,
   });
 });
 
@@ -189,22 +201,52 @@ router.post('/refresh', async (req, res) => {
     return;
   }
 
-  const token = tokenFromRequest(req);
-  if (!token) { res.status(401).json({ detail: 'No token to refresh' }); return; }
-  const payload = await resolveJwtPayload(token);
-  const developerId = typeof payload?.developer_id === 'string' ? payload.developer_id
-    : typeof payload?.sub === 'string' ? payload.sub
-    : null;
-  if (!payload || !developerId) { res.status(401).json({ detail: 'Invalid token' }); return; }
+  // Prefer the dedicated refresh token; fall back to a still-valid access token
+  // so existing sessions (no refresh token cookie yet) continue to work.
+  const refreshToken = refreshTokenFromRequest(req);
+  let payload: Record<string, unknown> | null = null;
 
-  setAuthCookies(res, token);
+  if (refreshToken) {
+    // Verify the refresh token — it must be signed by us, not expired, and typed correctly.
+    payload = verifyJwtIgnoreExpiry(refreshToken);
+    if (payload && payload.type !== 'refresh') payload = null;
+    if (payload) {
+      const exp = typeof payload.exp === 'number' ? payload.exp : 0;
+      if (Date.now() / 1000 > exp) payload = null; // truly expired refresh token
+    }
+  }
+
+  if (!payload) {
+    // Fallback: accept an access token that may be slightly expired (5-min grace window)
+    const accessToken = tokenFromRequest(req);
+    if (accessToken) {
+      const raw = verifyJwtIgnoreExpiry(accessToken);
+      if (raw) {
+        const exp = typeof raw.exp === 'number' ? raw.exp : 0;
+        const gracePeriod = 5 * 60;
+        if (Date.now() / 1000 <= exp + gracePeriod) payload = raw;
+      }
+    }
+  }
+
+  if (!payload) { res.status(401).json({ detail: 'Session expired. Please sign in again.' }); return; }
+
+  const developerId = typeof payload.sub === 'string' ? payload.sub
+    : typeof payload.developer_id === 'string' ? payload.developer_id
+    : null;
+  if (!developerId) { res.status(401).json({ detail: 'Invalid token payload.' }); return; }
+
+  const newAccessToken = buildAccessToken(developerId, payload.email, payload.first_name, payload.last_name);
+  const newRefreshToken = buildRefreshToken(developerId, payload.email, payload.first_name, payload.last_name);
+
+  setAuthCookies(res, newAccessToken, newRefreshToken);
   res.json({
     developer_id: developerId,
     email: payload.email ?? null,
     first_name: payload.first_name ?? null,
     last_name: payload.last_name ?? null,
-    access_token: token,
-    refresh_token: null,
+    access_token: newAccessToken,
+    refresh_token: newRefreshToken,
   });
 });
 
@@ -270,14 +312,15 @@ router.post('/sso-token', async (req, res) => {
     return;
   }
 
-  setAuthCookies(res, accessToken);
+  const ssoRefreshToken = buildRefreshToken(developerId, session.email, session.first_name, session.last_name);
+  setAuthCookies(res, accessToken, ssoRefreshToken);
   res.json({
     developer_id: developerId,
     email: session.email ?? null,
     first_name: session.first_name ?? null,
     last_name: session.last_name ?? null,
     access_token: accessToken,
-    refresh_token: null,
+    refresh_token: ssoRefreshToken,
   });
 });
 

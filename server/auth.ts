@@ -14,10 +14,14 @@ export type JwtPayload = {
   [key: string]: unknown;
 };
 
-function jwtSecret(): string {
+const JWT_SECRET = (() => {
   const secret = (process.env.JWT_SECRET_KEY || '').trim();
   if (!secret) console.warn('[auth] JWT_SECRET_KEY not set; using insecure fallback.');
   return secret || 'fallback-dev-secret-please-set-JWT_SECRET_KEY-in-env';
+})();
+
+function jwtSecret(): string {
+  return JWT_SECRET;
 }
 
 const REMOTE_AUTH_TIMEOUT_MS = 10_000;
@@ -69,6 +73,23 @@ export function verifyJwt(token: string): Record<string, unknown> | null {
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Record<string, unknown>;
     if (typeof payload.exp === 'number' && Date.now() / 1000 > payload.exp) return null;
     return payload;
+  } catch { return null; }
+}
+
+// Like verifyJwt but skips expiry check — used only by the /refresh endpoint so
+// clients can exchange an expired-but-valid token for a fresh one.
+export function verifyJwtIgnoreExpiry(token: string): Record<string, unknown> | null {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [header, body, sig] = parts;
+  const expected = createHmac('sha256', jwtSecret()).update(`${header}.${body}`).digest().toString('base64url');
+  try {
+    const aBuf = Buffer.from(sig, 'base64url');
+    const bBuf = Buffer.from(expected, 'base64url');
+    if (aBuf.length !== bBuf.length || !timingSafeEqual(aBuf, bBuf)) return null;
+  } catch { return null; }
+  try {
+    return JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Record<string, unknown>;
   } catch { return null; }
 }
 
