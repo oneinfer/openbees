@@ -177,7 +177,7 @@ export function TaskDetailPage() {
             Back to tasks
           </a>
           <a
-            href={`${(import.meta.env.VITE_OPENBEES_ENTERPRISE_APP_URL || 'http://localhost:3000').replace(/\/$/, '')}/tasks/${taskId}`}
+            href={`${(import.meta.env.VITE_OPENBEES_ENTERPRISE_APP_URL || 'https://openbees-enterprise.oneinfer.ai').replace(/\/$/, '')}/tasks/${taskId}`}
             className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-100 hover:bg-zinc-700 dark:bg-zinc-700 dark:hover:bg-zinc-600"
           >
             View in enterprise app

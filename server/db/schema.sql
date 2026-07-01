@@ -25,10 +25,6 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_organization_id ON tasks(organization_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_creator_developer_id ON tasks(creator_developer_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_assignee_developer_id ON tasks(assignee_developer_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_team_id ON tasks(team_id);
 
 CREATE TABLE IF NOT EXISTS projects (
   path              TEXT PRIMARY KEY,
@@ -40,8 +36,6 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at);
-CREATE INDEX IF NOT EXISTS idx_projects_organization_id ON projects(organization_id);
-CREATE INDEX IF NOT EXISTS idx_projects_creator_developer_id ON projects(creator_developer_id);
 
 CREATE TABLE IF NOT EXISTS app_settings (
   key               TEXT PRIMARY KEY,

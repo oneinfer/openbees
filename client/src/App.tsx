@@ -108,8 +108,8 @@ function OrganizationRoute() {
 function EnterpriseLoginRedirect() {
   useEffect(() => {
     const enterpriseAppUrl = import.meta.env.VITE_OPENBEES_ENTERPRISE_APP_URL?.trim()
-      || 'http://localhost:3000';
-    const loginUrl = new URL('/login', enterpriseAppUrl);
+      || 'https://openbees-enterprise.oneinfer.ai';
+    const loginUrl = new URL('/', enterpriseAppUrl);
     loginUrl.searchParams.set('return_to', `${window.location.origin}/auth/callback`);
     loginUrl.searchParams.set('next', '/organization');
     window.location.replace(loginUrl.toString());
@@ -201,7 +201,7 @@ export default function App() {
         <AuthProvider>
           <OrganizationProvider>
             <Routes>
-              <Route path="/login" element={<Navigate to="/tasks/new" replace />} />
+              <Route path="/" element={<Navigate to="/tasks/new" replace />} />
               <Route path="/auth/callback" element={<AuthCallbackPage />} />
               <Route path="/*" element={<AppShell />} />
             </Routes>
