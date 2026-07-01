@@ -138,12 +138,12 @@ function AppShell() {
         <Header />
         <Routes>
           <Route path="/" element={<Board />} />
+          <Route path="/tasks" element={<Board />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/organization" element={<OrganizationRoute />} />
           <Route path="/activity" element={<Navigate to="/" replace />} />
           <Route path="/chats/*" element={<Navigate to="/" replace />} />
           <Route path="/tasks/new" element={<NewTaskPage />} />
-          <Route path="/tasks" element={<Navigate to="/" replace />} />
           <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
           <Route path="/cron" element={<CronPage />} />
           <Route path="/skills" element={<SkillsPage />} />

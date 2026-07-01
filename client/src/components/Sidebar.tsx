@@ -88,7 +88,7 @@ export function Sidebar() {
       if (chordKey === 'g') {
         chordKey = null;
         if (chordTimeout) clearTimeout(chordTimeout);
-        const routes: Record<string, string> = { t: '/', p: '/projects', o: '/organization', f: '/files' };
+        const routes: Record<string, string> = { t: '/tasks', p: '/projects', o: '/organization', f: '/files' };
         if (routes[key]) {
           e.preventDefault();
           navigate(routes[key]);
@@ -124,7 +124,7 @@ export function Sidebar() {
   }, [currentProjectPath]);
 
   const isActive = (path: string) => {
-    if (path === '/') return location.pathname === '/' || (location.pathname.startsWith('/tasks/') && location.pathname !== '/tasks/new');
+    if (path === '/tasks') return location.pathname === '/tasks' || (location.pathname.startsWith('/tasks/') && location.pathname !== '/tasks/new');
     if (path === '/projects') return location.pathname === '/projects';
     return location.pathname === path;
   };
@@ -200,8 +200,8 @@ export function Sidebar() {
           <SidebarLink
             icon={<Columns3 size={18} />}
             label="Tasks"
-            to="/"
-            active={isActive('/')}
+            to="/tasks"
+            active={isActive('/tasks')}
             collapsed={collapsed}
             shortcut={['G', 'T']}
           />
