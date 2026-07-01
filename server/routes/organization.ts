@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { tokenFromRequest, parseCookies } from '../auth.js';
+import { tokenFromRequest } from '../auth.js';
 
 export const router = Router();
 
@@ -16,20 +16,19 @@ function oneInferBaseUrl(): string {
 }
 
 router.all('/*', async (req: Request, res: Response) => {
-  const upstreamPath = req.path === '/' ? '' : req.path;
+  const upstreamPath = req.path === '/' ? '/' : req.path;
   const queryString = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-  const url = `${oneInferBaseUrl()}/organization${upstreamPath}${queryString}`;
+  const baseUrl = oneInferBaseUrl();
+  const url = `${baseUrl}/organization${upstreamPath}${queryString}`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), ORG_UPSTREAM_TIMEOUT_MS);
 
-  const token = tokenFromRequest(req);
-  const cookie = req.header('cookie');
+  const token = (req as Request & { accessToken?: string }).accessToken ?? tokenFromRequest(req);
   const csrfToken = req.header('x-csrf-token');
 
   const headers: Record<string, string> = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (cookie) headers['Cookie'] = cookie;
   if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
 
   const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
@@ -48,7 +47,8 @@ router.all('/*', async (req: Request, res: Response) => {
     const msg = error instanceof Error && error.name === 'AbortError'
       ? 'Organization API timed out'
       : `Organization API unavailable: ${error instanceof Error ? error.message : String(error)}`;
-    res.status(502).json({ detail: msg });
+    console.error(`[organization] ${msg}; upstream=${baseUrl}`);
+    res.status(502).json({ detail: msg, upstream: baseUrl });
     return;
   }
   clearTimeout(timeoutId);

@@ -3,7 +3,7 @@ import { CSRF_TOKEN_COOKIE_NAME, getStoredAccessToken, getStoredRefreshToken, st
 const AUTH_REQUEST_TIMEOUT_MS = 35_000;
 
 // All auth and org requests go through the Express server at the same origin.
-// Express handles auth locally (/api/auth/*) and proxies org calls to FastAPI (/api/organization/*).
+// Express handles auth locally (/api/auth/*) and proxies org calls through /api/organization/*.
 const LOCAL_API_BASE = '/api';
 
 // Kept for external references (e.g. error messages). Not used for API calls.
