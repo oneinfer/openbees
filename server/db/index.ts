@@ -34,6 +34,10 @@ function ensureTaskSchema(database: import('better-sqlite3').Database): void {
     ['assignee_developer_id', 'TEXT'],
     ['assignee_email', 'TEXT'],
     ['agent_runtime', 'TEXT'],
+    ['agent_model', 'TEXT'],
+    ['reasoning_effort', 'TEXT'],
+    ['last_agent_response_at', 'INTEGER'],
+    ['last_viewed_at', 'INTEGER'],
     ['last_context_used_tokens', 'INTEGER'],
     ['last_context_window_tokens', 'INTEGER'],
   ]);
