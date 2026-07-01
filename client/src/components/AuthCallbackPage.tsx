@@ -14,7 +14,7 @@ export function AuthCallbackPage() {
     attempted.current = true;
 
     const token = searchParams.get('token');
-    const requestedNext = searchParams.get('next') || '/';
+    const requestedNext = searchParams.get('next') || '/organization';
     const next = requestedNext.startsWith('/') && !requestedNext.startsWith('//')
       ? requestedNext
       : '/organization';

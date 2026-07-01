@@ -106,14 +106,20 @@ function OrganizationRoute() {
 }
 
 function EnterpriseLoginRedirect() {
+  const location = useLocation();
+
   useEffect(() => {
     const enterpriseAppUrl = import.meta.env.VITE_OPENBEES_ENTERPRISE_APP_URL?.trim()
       || 'https://openbees-enterprise.oneinfer.ai';
-    const loginUrl = new URL('/', enterpriseAppUrl);
-    loginUrl.searchParams.set('return_to', `${window.location.origin}/auth/callback`);
-    loginUrl.searchParams.set('next', '/organization');
+    const next = `${location.pathname}${location.search}${location.hash}` || '/organization';
+    const callbackUrl = new URL('/auth/callback', window.location.origin);
+    callbackUrl.searchParams.set('next', next);
+
+    const loginUrl = new URL('/login', enterpriseAppUrl);
+    loginUrl.searchParams.set('return_to', callbackUrl.toString());
+    loginUrl.searchParams.set('next', next);
     window.location.replace(loginUrl.toString());
-  }, []);
+  }, [location.hash, location.pathname, location.search]);
 
   return <LoadingScreen />;
 }
