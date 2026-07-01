@@ -1,6 +1,5 @@
 node_modules/
 dist/
-.env
 *.tsbuildinfo
 .vscode/
 .venv-qwen-asr/
