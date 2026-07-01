@@ -17,7 +17,6 @@ export function enterpriseApiBaseUrl(): string {
   const configured = (
     process.env.BEES_ENTERPRISE_API_BASE_URL
     || process.env.ONEINFER_API_BASE_URL
-    || process.env.VITE_OPENBEES_ENTERPRISE_APP_URL
     || 'http://localhost:8001/api/v1'
   ).trim();
   return configured.replace(/\/$/, '');

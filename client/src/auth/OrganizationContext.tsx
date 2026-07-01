@@ -10,6 +10,7 @@ import {
   type OrganizationResponse,
 } from '../lib/auth-api';
 import {
+  clearStoredOrganizationWorkspace,
   getActiveWorkspace,
   setActiveWorkspace as storeActiveWorkspace,
   type ActiveWorkspace,
@@ -60,7 +61,11 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
   const { status: authStatus, accessToken } = useAuth();
   const [status, setStatus] = useState<OrganizationStatus>('idle');
   const [organizations, setOrganizations] = useState<OrganizationResponse[]>([]);
-  const [activeWorkspace, setActiveWorkspace] = useState<ActiveWorkspace>(() => getActiveWorkspace());
+  const [activeWorkspace, setActiveWorkspace] = useState<ActiveWorkspace>(() => {
+    const workspace = getActiveWorkspace();
+    if (workspace.type === 'organization') clearStoredOrganizationWorkspace();
+    return workspace;
+  });
   const [pendingInvitations, setPendingInvitations] = useState<OrganizationInvitationResponse[]>([]);
   const [error, setError] = useState<string | null>(null);
   const selectedOrganizationId = activeWorkspace.type === 'organization' ? activeWorkspace.organizationId : null;

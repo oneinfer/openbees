@@ -11,7 +11,7 @@ function isActiveTaskRun(status: string): boolean {
 }
 
 export function useTasks() {
-  const { selectedOrganizationId } = useOrganizations();
+  const { status: organizationStatus, selectedOrganizationId } = useOrganizations();
   const setProjects = useStore((s) => s.setProjects);
   const setCurrentProjectPath = useStore((s) => s.setCurrentProjectPath);
   const upsertProject = useStore((s) => s.upsertProject);
@@ -24,6 +24,7 @@ export function useTasks() {
   const retryRef = useRef(0);
 
   useEffect(() => {
+    if (selectedOrganizationId && organizationStatus !== 'ready') return;
     let cancelled = false;
     setTasks([]);
     fetchTasks()
@@ -33,14 +34,16 @@ export function useTasks() {
         if (!cancelled) setTasks([]);
       });
     return () => { cancelled = true; };
-  }, [selectedOrganizationId, setTasks]);
+  }, [organizationStatus, selectedOrganizationId, setTasks]);
 
   useEffect(() => {
+    if (selectedOrganizationId && organizationStatus !== 'ready') return;
     setProjects([]);
     fetchProjects().then((res) => setProjects(res.projects)).catch(console.error);
-  }, [selectedOrganizationId, setProjects]);
+  }, [organizationStatus, selectedOrganizationId, setProjects]);
 
   useEffect(() => {
+    if (selectedOrganizationId && organizationStatus !== 'ready') return;
     const projectPathAtRequestStart = useStore.getState().currentProjectPath;
     fetchCurrentProject()
       .then((res) => {
@@ -53,9 +56,10 @@ export function useTasks() {
         const state = useStore.getState();
         if (!state.currentProjectLoaded) setCurrentProjectPath(state.currentProjectPath);
       });
-  }, [selectedOrganizationId, setCurrentProjectPath]);
+  }, [organizationStatus, selectedOrganizationId, setCurrentProjectPath]);
 
   useEffect(() => {
+    if (selectedOrganizationId && organizationStatus !== 'ready') return;
     let es: EventSource | null = null;
     let retryTimeout: ReturnType<typeof setTimeout>;
     let cancelled = false;
@@ -117,5 +121,5 @@ export function useTasks() {
       clearTimeout(retryTimeout);
       es?.close();
     };
-  }, [selectedOrganizationId, setProjects, setTasks, upsertProject, removeProject, upsertTask, removeTask, setStreamingTasks, setTaskStreaming]);
+  }, [organizationStatus, selectedOrganizationId, setProjects, setTasks, upsertProject, removeProject, upsertTask, removeTask, setStreamingTasks, setTaskStreaming]);
 }

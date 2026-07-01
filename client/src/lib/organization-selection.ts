@@ -42,6 +42,14 @@ export function setActiveWorkspace(value: ActiveWorkspace): void {
   localStorage.removeItem(SELECTED_ORGANIZATION_KEY);
 }
 
+export function clearStoredOrganizationWorkspace(): void {
+  const activeWorkspace = localStorage.getItem(ACTIVE_WORKSPACE_KEY)?.trim() ?? '';
+  if (activeWorkspace.startsWith('organization:')) {
+    localStorage.removeItem(ACTIVE_WORKSPACE_KEY);
+  }
+  localStorage.removeItem(SELECTED_ORGANIZATION_KEY);
+}
+
 export function getSelectedOrganizationId(): string | null {
   const workspace = getActiveWorkspace();
   return workspace.type === 'organization' ? workspace.organizationId : null;
