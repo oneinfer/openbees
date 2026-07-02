@@ -234,7 +234,7 @@ export function ensureGraniteAsrEnvironment(options = {}) {
   };
   const exampleValues = {
     GRANITE_ASR_ENABLED: String(enabled),
-    GRANITE_ASR_PYTHON: python,
+    GRANITE_ASR_PYTHON: '',
     GRANITE_ASR_MODEL: DEFAULT_GRANITE_ASR_MODEL,
     GRANITE_ASR_DEVICE: 'cpu',
     GRANITE_ASR_DTYPE: 'float32',

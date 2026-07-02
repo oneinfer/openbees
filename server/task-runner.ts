@@ -79,7 +79,6 @@ async function consumeChatRun(
       }
       applyEvent(runTask.id, event);
       broadcastLive(runTask.id, event);
-      liveTts.end(runTask.id);
     }
   } catch (error) {
     const event: StreamEvent = { type: 'error', error: toErrorMessage(error, 'Hermes chat stream failed') };

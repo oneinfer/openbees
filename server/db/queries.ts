@@ -96,6 +96,13 @@ const stmtUpdateActivityContextPromotedTask = db.prepare(`
   SET promoted_task_id = ?, updated_at = ?
   WHERE id = ?
 `);
+const stmtUpdateActivityContextDetails = db.prepare(`
+  UPDATE activity_contexts
+  SET trigger = @trigger, spoken_input = @spoken_input, captured_text = @captured_text,
+      active_window_json = @active_window_json, images_json = @images_json, decision_json = @decision_json,
+      updated_at = @updated_at
+  WHERE id = @id
+`);
 const stmtDeleteActivityContext = db.prepare('DELETE FROM activity_contexts WHERE id = ?');
 
 export function getAllProjects(): Project[] {
@@ -498,6 +505,27 @@ export function insertActivityContext(context: {
 
 export function updateActivityContextPromotedTask(id: string, taskId: string | null): ActivityContext | undefined {
   stmtUpdateActivityContextPromotedTask.run(taskId, Date.now(), id);
+  return getActivityContext(id);
+}
+
+export function updateActivityContextDetails(id: string, context: {
+  trigger: string;
+  spoken_input?: string | null;
+  captured_text?: string | null;
+  active_window?: unknown;
+  images?: unknown;
+  decision?: ActivityIntentDecision | null;
+}): ActivityContext | undefined {
+  stmtUpdateActivityContextDetails.run({
+    id,
+    trigger: context.trigger,
+    spoken_input: context.spoken_input ?? null,
+    captured_text: context.captured_text ?? null,
+    active_window_json: jsonString(context.active_window),
+    images_json: jsonString(context.images),
+    decision_json: jsonString(context.decision),
+    updated_at: Date.now(),
+  });
   return getActivityContext(id);
 }
 

@@ -384,9 +384,11 @@ export function OrganizationPage() {
                 </h2>
                 <RoleBadge role={selectedOrganization.current_user_role} />
               </div>
-              <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-                {selectedOrganization.contact_email}
-              </p>
+              {developer?.email && (
+                <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                  {developer.email}
+                </p>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {organizations.length > 1 && (

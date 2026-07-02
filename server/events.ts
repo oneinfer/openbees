@@ -58,6 +58,10 @@ function eventVisibleToClient(event: BoardEvent, context: OrganizationAccessCont
     const task = getTask(event.run.taskId);
     return task ? taskVisibleToOrganizationContext(task, context) : true;
   }
+  if (event.type === 'voice_task_started') {
+    const task = getTask(event.taskId);
+    return task ? taskVisibleToOrganizationContext(task, context) : true;
+  }
   return true;
 }
 

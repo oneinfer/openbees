@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { signJwt, resolveJwtPayload, tokenFromRequest, verifyJwtIgnoreExpiry, parseCookies } from '../auth.js';
 import { isEnterpriseMode } from '../deployment-config.js';
@@ -9,6 +9,8 @@ export const router = Router();
 const ACCESS_EXPIRE_SECONDS = parseInt(process.env.ACCESS_TOKEN_EXPIRE_MINUTES || '60', 10) * 60;
 const REFRESH_EXPIRE_SECONDS = parseInt(process.env.REFRESH_TOKEN_EXPIRE_DAYS || '30', 10) * 24 * 60 * 60;
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
+const OPENBEES_JWT_ISSUER = 'openbees-oneinfer';
+const OPENBEES_JWT_AUDIENCE = 'openbees';
 const DEFAULT_ONEINFER_API_BASE_URL = 'http://localhost:8001/api/v1';
 const AUTH_UPSTREAM_TIMEOUT_MS = 30_000;
 
@@ -22,12 +24,36 @@ function oneInferBaseUrl(): string {
 
 function buildAccessToken(sub: string, email: unknown, firstName: unknown, lastName: unknown): string {
   const now = Math.floor(Date.now() / 1000);
-  return signJwt({ sub, email, first_name: firstName, last_name: lastName, type: 'access', iat: now, exp: now + ACCESS_EXPIRE_SECONDS });
+  return signJwt({
+    sub,
+    client_type: 'developer',
+    email,
+    first_name: firstName,
+    last_name: lastName,
+    type: 'access',
+    iss: OPENBEES_JWT_ISSUER,
+    aud: OPENBEES_JWT_AUDIENCE,
+    jti: randomUUID().replace(/-/g, ''),
+    iat: now,
+    exp: now + ACCESS_EXPIRE_SECONDS,
+  });
 }
 
 function buildRefreshToken(sub: string, email: unknown, firstName: unknown, lastName: unknown): string {
   const now = Math.floor(Date.now() / 1000);
-  return signJwt({ sub, email, first_name: firstName, last_name: lastName, type: 'refresh', iat: now, exp: now + REFRESH_EXPIRE_SECONDS });
+  return signJwt({
+    sub,
+    client_type: 'developer',
+    email,
+    first_name: firstName,
+    last_name: lastName,
+    type: 'refresh',
+    iss: OPENBEES_JWT_ISSUER,
+    aud: OPENBEES_JWT_AUDIENCE,
+    jti: randomUUID().replace(/-/g, ''),
+    iat: now,
+    exp: now + REFRESH_EXPIRE_SECONDS,
+  });
 }
 
 function setAuthCookies(res: Response, accessToken: string, refreshToken?: string): void {

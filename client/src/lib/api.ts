@@ -261,6 +261,23 @@ export function fetchTtsStatus() {
   return request<TtsStatusResponse>('/tts/status');
 }
 
+export interface ActivityDaemonStatusResponse {
+  enabled: boolean;
+  available: boolean;
+  managed: boolean;
+  url: string;
+  error?: string;
+  daemon?: unknown;
+}
+
+export function startActivityAssistant() {
+  return request<ActivityDaemonStatusResponse>('/activity/start', { method: 'POST' });
+}
+
+export function stopActivityAssistant() {
+  return request<ActivityDaemonStatusResponse>('/activity/stop', { method: 'POST' });
+}
+
 export function liveTaskTtsUrl(taskId: string) {
   const params = new URLSearchParams();
   const organizationId = hasAuthSessionCookie() ? getSelectedOrganizationId() : null;
@@ -279,6 +296,33 @@ export function liveTaskChatUrl(taskId: string) {
   if (accessToken) params.set('accessToken', accessToken);
   const query = params.toString();
   return `${BASE}/tasks/${encodeURIComponent(taskId)}/live${query ? `?${query}` : ''}`;
+}
+
+export function liveVoiceSessionTtsUrl(sessionId: string) {
+  const params = new URLSearchParams();
+  const organizationId = hasAuthSessionCookie() ? getSelectedOrganizationId() : null;
+  const accessToken = getStoredAccessToken();
+  if (organizationId) params.set('organizationId', organizationId);
+  if (accessToken) params.set('accessToken', accessToken);
+  const query = params.toString();
+  return `${BASE}/tts/sessions/${encodeURIComponent(sessionId)}/live${query ? `?${query}` : ''}`;
+}
+
+export function liveVoiceSessionChatUrl(sessionId: string) {
+  const params = new URLSearchParams();
+  const organizationId = hasAuthSessionCookie() ? getSelectedOrganizationId() : null;
+  const accessToken = getStoredAccessToken();
+  if (organizationId) params.set('organizationId', organizationId);
+  if (accessToken) params.set('accessToken', accessToken);
+  const query = params.toString();
+  return `${BASE}/voice-assistant/sessions/${encodeURIComponent(sessionId)}/live${query ? `?${query}` : ''}`;
+}
+
+export function synthesizeTts(text: string) {
+  return request<{ sampleRate: number; format: 'pcm_s16le'; audioBase64: string; sampleCount?: number }>('/tts/synthesize', {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  });
 }
 
 export function transcribeAudio(audio: Blob, language?: string) {

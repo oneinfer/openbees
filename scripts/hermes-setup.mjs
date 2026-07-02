@@ -355,8 +355,13 @@ function ensureProjectEnvFiles(discovery, { writeLocalEnv = true, writeExampleEn
     HERMES_PYTHON: discovery.python,
     HERMES_HOME: discovery.hermesHome,
   };
+  const exampleValues = {
+    HERMES_AGENT_DIR: '',
+    HERMES_PYTHON: '',
+    HERMES_HOME: '',
+  };
 
-  if (writeExampleEnv) writeEnvFile(resolve(process.cwd(), '.env.example'), values);
+  if (writeExampleEnv) writeEnvFile(resolve(process.cwd(), '.env.example'), exampleValues);
   if (writeLocalEnv) writeEnvFile(resolve(process.cwd(), '.env'), values);
 }
 

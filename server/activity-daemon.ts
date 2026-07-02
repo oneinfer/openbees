@@ -6,12 +6,14 @@ import { broadcast, clientCount } from './events.js';
 import { openBrowserForDev } from './browser-opener.js';
 import { expandHomePrefix, resolveBeesHome } from './paths.js';
 import { getActiveActivityAgentSettings } from './activity-agent-settings.js';
-import { createTaskRecord } from './task-service.js';
+import { createTaskRecord, startTaskImmediately } from './task-service.js';
 import { normalizeActivityIntentDecision } from './prompts/activity-intent.js';
 import { appendAttachmentContext, saveActivityImageAttachments } from './attachments.js';
 import { enrichImageAttachmentContext } from './image-context.js';
-import { getActivityContextBySourceEventId, insertActivityContext, updateTask } from './db/queries.js';
+import { getActivityContextBySourceEventId, insertActivityContext, updateActivityContextDetails, updateTask } from './db/queries.js';
 import { notifyTaskCreated } from './native-notifications.js';
+import { liveTts } from './tts/live-tts.js';
+import { runVoiceConversationTurn, speakTaskAcknowledgment } from './voice-assistant.js';
 import type { ActivityContext, ActivityIntentDecision } from '../shared/types.js';
 import type { AsrTranscriptionResponse } from '../shared/types.js';
 
@@ -19,6 +21,16 @@ const HEALTH_TIMEOUT_MS = 1200;
 const STARTUP_POLL_MS = 250;
 const STARTUP_TIMEOUT_MS = Number(process.env.BEES_ACTIVITY_STARTUP_TIMEOUT_MS ?? 20 * 60_000);
 const WAKE_BROWSER_OPEN_DEBOUNCE_MS = 5000;
+
+// Every capture the Python daemon can hand off after a "hey bee" wake — plain speech
+// with no selection (voice_transcript), speech + a drag selection (voice_selection), or
+// speech + a full-screen screenshot (voice_screenshot). All three are spoken commands and
+// should get a spoken acknowledgment; only these are voice-initiated (see activity_daemon/daemon.py).
+const VOICE_TASK_TRIGGERS = new Set(['voice_transcript', 'voice_selection', 'voice_screenshot']);
+
+function isVoiceTaskTrigger(trigger: string | undefined): boolean {
+  return !!trigger && VOICE_TASK_TRIGGERS.has(trigger);
+}
 
 export interface ActivityDaemonStatus {
   enabled: boolean;
@@ -378,15 +390,11 @@ function activityReadiness(data: unknown): { ready: true } | { ready: false; err
     return { ready: false, pending: lastStatus };
   }
   if (!lastStatus || statusLower === 'not started') return { ready: false, pending: 'Activity speech listener is not started yet.' };
-  if (
-    statusLower.includes('listening for wake phrase')
-    || statusLower.includes('wake matched; armed for drag selection')
-    || statusLower.includes('waiting for selection')
-  ) {
-    return { ready: true };
-  }
 
-  return { ready: false, pending: lastStatus || 'Activity speech listener is warming up.' };
+  // Every status past this point (wake detected, transcribing, captured input, etc.) is
+  // part of normal operation, not startup — treat it as ready so waitUntilReady's polling
+  // loop stops and doesn't re-log statuses the daemon has already printed itself.
+  return { ready: true };
 }
 
 function activitySpeechSummary(data: unknown): string {
@@ -425,9 +433,12 @@ class ActivityDaemonService {
   private eventStreamAbort: AbortController | null = null;
   private eventStreamReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private processedEventIds = new Set<string>();
+  private transcriptProcessedEventIds = new Set<string>();
+  private taskCreatedEventIds = new Set<string>();
   private wakeUiUrl: string | null = null;
   private lastWakeBrowserOpenAt = 0;
   private runtimeDisabledReason: string | undefined;
+  private running = false;
 
   enabled(): boolean {
     return activityEnabled() && !this.runtimeDisabledReason;
@@ -445,6 +456,10 @@ class ActivityDaemonService {
 
     if (this.startPromise) return await this.startPromise;
     this.startPromise = this.startInternal()
+      .then(() => {
+        this.running = true;
+        if (this.wakeUiUrl) this.startEventSubscription();
+      })
       .catch(async (error) => {
         if (!isNoDefaultInputDeviceError(error)) throw error;
         this.runtimeDisabledReason = 'Activity daemon disabled because no default input device is available.';
@@ -456,6 +471,10 @@ class ActivityDaemonService {
         this.startPromise = null;
       });
     await this.startPromise;
+  }
+
+  isRunning(): boolean {
+    return this.running;
   }
 
   private async startInternal(): Promise<void> {
@@ -547,6 +566,7 @@ class ActivityDaemonService {
   }
 
   async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
+    this.running = false;
     this.stopEventSubscription();
 
     const child = this.child;
@@ -644,7 +664,7 @@ class ActivityDaemonService {
 
   openUiOnWake(url: string): void {
     this.wakeUiUrl = url;
-    if (this.enabled()) this.startEventSubscription();
+    if (this.running) this.startEventSubscription();
   }
 
   private startEventSubscription(): void {
@@ -657,17 +677,17 @@ class ActivityDaemonService {
     const scheduleReconnect = () => {
       this.eventStreamReconnectTimer = setTimeout(() => {
         this.eventStreamReconnectTimer = null;
-        if (this.enabled()) this.startEventSubscription();
+        if (this.running) this.startEventSubscription();
       }, 2000);
     };
 
     void this.consumeEventStream(controller, connectedAt)
       .then(() => {
-        if (controller.signal.aborted || !this.enabled()) return;
+        if (controller.signal.aborted || !this.running) return;
         scheduleReconnect();
       })
       .catch((error) => {
-        if (controller.signal.aborted || !this.enabled()) return;
+        if (controller.signal.aborted || !this.running) return;
         const msg = formatError(error);
         if (msg !== 'terminated') {
           console.warn(`[activity-daemon] activity event stream disconnected: ${msg}`);
@@ -742,13 +762,27 @@ class ActivityDaemonService {
     if (!isFreshEvent(event, connectedAt)) return;
     if (event.trigger === 'voice_wake') {
       this.openUiForWake();
+      broadcast({ type: 'voice_wake_ack' });
       return;
     }
     if (!isTaskCreatingActivityEvent(event)) return;
 
     const eventId = event.id || `${event.timestamp ?? ''}:${event.trigger ?? ''}`;
-    if (!eventId || this.processedEventIds.has(eventId)) return;
-    this.rememberEvent(eventId);
+    if (!eventId) return;
+
+    // The daemon publishes a "late" voice_transcript event carrying the real spoken
+    // text once ASR finishes, reusing the same id as the voice_screenshot/voice_selection
+    // event it belongs to (it upserts by id in its own store). That id is already in
+    // processedEventIds from the first pass, so it must bypass that dedup guard here or
+    // the real transcript would never reach the intent decision. Dedup it separately
+    // instead, and skip if a task was already created from the first pass.
+    if (event.trigger === 'voice_transcript') {
+      if (this.taskCreatedEventIds.has(eventId) || this.transcriptProcessedEventIds.has(eventId)) return;
+      this.rememberInSet(this.transcriptProcessedEventIds, eventId);
+    } else {
+      if (this.processedEventIds.has(eventId)) return;
+      this.rememberEvent(eventId);
+    }
 
     await this.processVoiceActivityEvent(event);
   }
@@ -766,10 +800,14 @@ class ActivityDaemonService {
   }
 
   private rememberEvent(id: string): void {
-    this.processedEventIds.add(id);
-    if (this.processedEventIds.size <= 500) return;
-    const oldest = this.processedEventIds.values().next().value;
-    if (oldest) this.processedEventIds.delete(oldest);
+    this.rememberInSet(this.processedEventIds, id);
+  }
+
+  private rememberInSet(set: Set<string>, id: string, cap = 500): void {
+    set.add(id);
+    if (set.size <= cap) return;
+    const oldest = set.values().next().value;
+    if (oldest) set.delete(oldest);
   }
 
   private async processVoiceActivityEvent(event: ActivityDaemonEvent): Promise<void> {
@@ -801,6 +839,7 @@ class ActivityDaemonService {
         + `title="${decision.title}", reason="${decision.reason}"`,
       );
     } catch (error) {
+      console.warn(`[activity-daemon] activity intent classification failed, saving as context: ${formatError(error)}`);
       decision = {
         action: 'save_context',
         title: 'Saved voice context',
@@ -815,6 +854,13 @@ class ActivityDaemonService {
 
     if (decision.action === 'create_task' && decision.hasEnoughContext) {
       await this.createTaskFromActivityDecision(event, decision, transcript);
+      return;
+    }
+
+    if (event.trigger === 'voice_transcript' && transcript) {
+      runVoiceConversationTurn(transcript).catch((error) => {
+        console.error('[activity-daemon] voice conversation turn failed:', error);
+      });
       return;
     }
 
@@ -860,8 +906,27 @@ class ActivityDaemonService {
           description: appendAttachmentContext(description, attachments),
         }) ?? task;
       }
+      if (event.id) this.rememberInSet(this.taskCreatedEventIds, event.id);
       notifyTaskCreated(task);
-      broadcast({ type: 'task_created', task });
+
+      if (isVoiceTaskTrigger(event.trigger)) {
+        liveTts.beginSession(task.id);
+        // Must be awaited (and therefore enqueued into liveTts) before the task run starts:
+        // startTaskImmediately's streamed output is pushed into the same per-task TTS queue
+        // (see task-runner.ts), and that queue is strict FIFO. Starting the run first lets
+        // the agent's own narration race the acknowledgment for first place in the queue, so
+        // the user could hear task output before — or interleaved with — "Got it, I'm
+        // starting on: X". speakTaskAcknowledgment never rejects (it falls back to a fixed
+        // string on any failure), so this can't stall task creation indefinitely.
+        await speakTaskAcknowledgment(task.id, decision.title, decision.taskDescription).catch((error) => {
+          console.error('[activity-daemon] task acknowledgment failed:', error);
+        });
+        task = startTaskImmediately(task);
+        broadcast({ type: 'task_created', task });
+        broadcast({ type: 'voice_task_started', taskId: task.id });
+      } else {
+        broadcast({ type: 'task_created', task });
+      }
     } catch (error) {
       await this.broadcastActivityDraft(event, {
         ...decision,
@@ -878,16 +943,25 @@ class ActivityDaemonService {
     capturedText: string,
   ): Promise<ActivityContext> {
     const existing = event.id ? getActivityContextBySourceEventId(event.id) : undefined;
-    const context = existing ?? insertActivityContext({
-      source_event_id: event.id ?? null,
-      trigger: event.trigger ?? 'activity',
-      spoken_input: normalizedTranscript(event) || event.spoken_input || null,
-      captured_text: capturedText || null,
-      active_window: event.active_window ?? null,
-      images: event.images ?? null,
-      decision,
-      promoted_task_id: null,
-    });
+    const context = existing
+      ? (updateActivityContextDetails(existing.id, {
+        trigger: event.trigger ?? existing.trigger,
+        spoken_input: normalizedTranscript(event) || event.spoken_input || existing.spoken_input,
+        captured_text: capturedText || existing.captured_text,
+        active_window: event.active_window ?? existing.active_window,
+        images: event.images ?? existing.images,
+        decision,
+      }) ?? existing)
+      : insertActivityContext({
+        source_event_id: event.id ?? null,
+        trigger: event.trigger ?? 'activity',
+        spoken_input: normalizedTranscript(event) || event.spoken_input || null,
+        captured_text: capturedText || null,
+        active_window: event.active_window ?? null,
+        images: event.images ?? null,
+        decision,
+        promoted_task_id: null,
+      });
     console.log(
       `[activity-daemon] saved activity context: id=${context.id}, `
       + `trigger=${context.trigger}, title="${context.decision?.title || 'Saved voice context'}"`,

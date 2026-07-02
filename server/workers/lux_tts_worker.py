@@ -131,7 +131,11 @@ def _load_model():
         MODEL = LuxTTS(model_name, device=device, threads=threads)
     else:
         MODEL = LuxTTS(model_name, device=device)
-    ENCODED_PROMPT = MODEL.encode_prompt(reference_audio, rms=0.01)
+    ENCODED_PROMPT = MODEL.encode_prompt(
+        reference_audio,
+        duration=_env_float("LUX_TTS_REFERENCE_DURATION_SECONDS", 5.0),
+        rms=_env_float("LUX_TTS_REFERENCE_RMS", 0.001),
+    )
     return MODEL, ENCODED_PROMPT
 
 
@@ -151,7 +155,7 @@ def _synthesize(text: str) -> dict[str, Any]:
         text,
         encoded_prompt,
         num_steps=_env_int("LUX_TTS_NUM_STEPS", 4),
-        t_shift=_env_float("LUX_TTS_T_SHIFT", 0.9),
+        t_shift=_env_float("LUX_TTS_T_SHIFT", 0.5),
         speed=_env_float("LUX_TTS_SPEED", 1.0),
     )
     wav = _to_numpy(final_wav).astype(np.float32)

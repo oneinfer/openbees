@@ -5,7 +5,8 @@ import { platform } from 'node:os';
 
 const KEYS = [
   'LUX_TTS_ENABLED','LUX_TTS_PYTHON','LUX_TTS_MODEL','LUX_TTS_DEVICE','LUX_TTS_THREADS',
-  'LUX_TTS_REFERENCE_AUDIO_PATH','LUX_TTS_NUM_STEPS','LUX_TTS_T_SHIFT','LUX_TTS_SPEED',
+  'LUX_TTS_REFERENCE_AUDIO_PATH','LUX_TTS_REFERENCE_DURATION_SECONDS','LUX_TTS_REFERENCE_RMS',
+  'LUX_TTS_NUM_STEPS','LUX_TTS_T_SHIFT','LUX_TTS_SPEED',
   'LUX_TTS_RUN_LIMIT','LUX_TTS_SEGMENT_MAX_CHARS','LUX_TTS_SEGMENT_FLUSH_MS',
   'LUX_TTS_QUEUE_MAX_SEGMENTS','LUX_TTS_SEGMENT_TIMEOUT_MS','LUX_TTS_PRELOAD',
 ];
@@ -136,12 +137,16 @@ export function ensureLuxTtsEnvironment(options = {}) {
   const local = parseEnv(resolve(process.cwd(), '.env'));
   const cfg = (key) => process.env[key]?.trim() || local[key]?.trim() || '';
   const enabled = (cfg('LUX_TTS_ENABLED') || 'false').toLowerCase() === 'true';
-  const python = cfg('LUX_TTS_PYTHON') || cfg('GRANITE_ASR_PYTHON') || venvPython();
+  const configuredPython = cfg('LUX_TTS_PYTHON') || cfg('GRANITE_ASR_PYTHON');
+  const python = configuredPython && exists(configuredPython) ? configuredPython : venvPython();
   const values = {
     LUX_TTS_ENABLED: String(enabled), LUX_TTS_PYTHON: python, LUX_TTS_MODEL: cfg('LUX_TTS_MODEL') || DEFAULT_MODEL,
     LUX_TTS_DEVICE: cfg('LUX_TTS_DEVICE') || cfg('GRANITE_ASR_DEVICE') || 'cpu', LUX_TTS_THREADS: cfg('LUX_TTS_THREADS') || '2',
-    LUX_TTS_REFERENCE_AUDIO_PATH: cfg('LUX_TTS_REFERENCE_AUDIO_PATH') || DEFAULT_REFERENCE_AUDIO, LUX_TTS_NUM_STEPS: cfg('LUX_TTS_NUM_STEPS') || '4',
-    LUX_TTS_T_SHIFT: cfg('LUX_TTS_T_SHIFT') || '0.9', LUX_TTS_SPEED: cfg('LUX_TTS_SPEED') || '1.0', LUX_TTS_RUN_LIMIT: cfg('LUX_TTS_RUN_LIMIT') || '1',
+    LUX_TTS_REFERENCE_AUDIO_PATH: cfg('LUX_TTS_REFERENCE_AUDIO_PATH') || DEFAULT_REFERENCE_AUDIO,
+    LUX_TTS_REFERENCE_DURATION_SECONDS: cfg('LUX_TTS_REFERENCE_DURATION_SECONDS') || '5',
+    LUX_TTS_REFERENCE_RMS: cfg('LUX_TTS_REFERENCE_RMS') || '0.001',
+    LUX_TTS_NUM_STEPS: cfg('LUX_TTS_NUM_STEPS') || '4',
+    LUX_TTS_T_SHIFT: cfg('LUX_TTS_T_SHIFT') || '0.5', LUX_TTS_SPEED: cfg('LUX_TTS_SPEED') || '1.0', LUX_TTS_RUN_LIMIT: cfg('LUX_TTS_RUN_LIMIT') || '1',
     LUX_TTS_SEGMENT_MAX_CHARS: cfg('LUX_TTS_SEGMENT_MAX_CHARS') || '420', LUX_TTS_SEGMENT_FLUSH_MS: cfg('LUX_TTS_SEGMENT_FLUSH_MS') || '900',
     LUX_TTS_QUEUE_MAX_SEGMENTS: cfg('LUX_TTS_QUEUE_MAX_SEGMENTS') || '12', LUX_TTS_SEGMENT_TIMEOUT_MS: cfg('LUX_TTS_SEGMENT_TIMEOUT_MS') || '30000',
     LUX_TTS_PRELOAD: cfg('LUX_TTS_PRELOAD') || 'true',
