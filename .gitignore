@@ -5,7 +5,6 @@ dist/
 .venv-qwen-asr/
 .venv-granite-asr/
 tmp-dev-server*.log
-voice-reference.wav
 
 __pycache__/
 *.py[cod]
