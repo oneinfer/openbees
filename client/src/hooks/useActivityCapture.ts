@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import type { BoardEvent } from '@shared/types';
 import { createActivityTaskDraft, saveActivityTaskDraft } from '../lib/activityDraft';
 import { useStore } from '../lib/store';
+import { playWakeAck, subscribeVoiceConversation, subscribeVoiceTask } from '../lib/voiceAssistantAudio';
 
 export function useActivityCapture() {
   const navigate = useNavigate();
@@ -39,6 +40,18 @@ export function useActivityCapture() {
     function handleBoardEvent(message: MessageEvent<string>) {
       try {
         const event = JSON.parse(message.data) as BoardEvent;
+        if (event.type === 'voice_wake_ack') {
+          void playWakeAck();
+          return;
+        }
+        if (event.type === 'voice_task_started') {
+          subscribeVoiceTask(event.taskId);
+          return;
+        }
+        if (event.type === 'voice_conversation_reply') {
+          subscribeVoiceConversation(event.sessionId);
+          return;
+        }
         if (event.type !== 'activity_draft_created') return;
         if (event.context.promoted_task_id) return;
         if (handledContextIds.current.has(event.context.id)) return;

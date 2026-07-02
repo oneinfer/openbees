@@ -169,6 +169,7 @@ class ActivityDaemon:
         self.last_arm_trigger = ""
         self.spoken_input_pending = False
         self.spoken_input_condition = threading.Condition(self.state_lock)
+        self.pending_voice_screenshot_event: dict[str, Any] | None = None
         self.last_disarm_reason: str | None = None
         self.last_selection_status: dict[str, Any] | None = None
         self.speech_suppression_leases: dict[str, dict[str, Any]] = {}
@@ -395,10 +396,26 @@ class ActivityDaemon:
 
     def resolve_spoken_input(self, spoken_input: str = "[input pending]") -> None:
         normalized_spoken_input = str(spoken_input or "").strip()
+        has_real_transcript = bool(normalized_spoken_input) and normalized_spoken_input != "[input pending]"
+        late_event: dict[str, Any] | None = None
+        late_spoken_input = ""
         with self.spoken_input_condition:
             self.last_spoken_input = normalized_spoken_input or "[input pending]"
             self.spoken_input_pending = False
+            if self.last_spoken_input != "[input pending]" and self.pending_voice_screenshot_event:
+                late_event = self.pending_voice_screenshot_event
+                late_spoken_input = self.last_spoken_input
+                self.pending_voice_screenshot_event = None
             self.spoken_input_condition.notify_all()
+        if has_real_transcript:
+            # Speech already resolved: stop waiting out the rest of the fixed
+            # arm window and let the fallback screenshot capture fire now, so
+            # the screenshot+transcript are published together without delay.
+            with self.state_lock:
+                if self.capture_armed and self.armed_until > time.monotonic():
+                    self.armed_until = time.monotonic()
+        if late_event:
+            self.publish_late_voice_transcript(late_event, late_spoken_input)
 
     def wait_for_spoken_input(self, timeout_seconds: float = 10.0) -> None:
         deadline = time.monotonic() + timeout_seconds
@@ -630,6 +647,15 @@ class ActivityDaemon:
             },
             "privacy": privacy,
         }
+        with self.state_lock:
+            latest_spoken_input = str(self.last_spoken_input or "").strip()
+            if trigger == "voice_screenshot" and spoken_input == "[input pending]" and latest_spoken_input not in {"", "[input pending]"}:
+                spoken_input = latest_spoken_input
+                event["spoken_input"] = spoken_input
+            if trigger == "voice_screenshot" and spoken_input == "[input pending]":
+                self.pending_voice_screenshot_event = event
+            elif trigger in {"voice_screenshot", "voice_selection", "voice_transcript"}:
+                self.pending_voice_screenshot_event = None
         self._write_event_json(event, event_json_path)
         self.store.add_event(event)
         self._broadcast(event)
@@ -640,6 +666,23 @@ class ActivityDaemon:
                 f"path={images['screenshot'].get('path')}",
                 flush=True,
             )
+        return event
+
+    def publish_late_voice_transcript(self, base_event: dict[str, Any], spoken_input: str) -> dict[str, Any]:
+        # Keep the same event id as the screenshot it belongs to (store.add_event
+        # upserts by id) so this updates the existing capture/context instead of
+        # creating a second one that would show up as a duplicate attachment.
+        event = dict(base_event)
+        event["timestamp"] = datetime.now(timezone.utc).isoformat()
+        event["trigger"] = "voice_transcript"
+        event["spoken_input"] = spoken_input
+        self.store.add_event(event)
+        self._broadcast(event)
+        print(
+            "[activity-daemon] published late voice transcript event: "
+            f"id={event['id']}, spoken_input={spoken_input!r}",
+            flush=True,
+        )
         return event
 
     def _artifact_dir(self, event_time: datetime, event_id: str):

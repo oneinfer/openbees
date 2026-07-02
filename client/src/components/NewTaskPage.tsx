@@ -11,7 +11,7 @@ import {
   type ComposerAttachment,
 } from './AttachmentPicker';
 
-import { createTask, deleteActivityContext, fetchActivityContext, pickWorkspaceDirectory } from '../lib/api';
+import { createTask, deleteActivityContext, fetchActivityContext, pickWorkspaceDirectory, updateCurrentProject } from '../lib/api';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { clearActivityTaskDraft, createActivityTaskDraft, discardActivityTaskDraftOnPageUnload, loadActivityTaskDraft } from '../lib/activityDraft';
 import { isEditableTarget, handleChatKeyDown } from '../lib/keyboard';
@@ -59,6 +59,8 @@ export function NewTaskPage() {
   const [assigneeEmail, setAssigneeEmail] = useState('');
 
   const currentProjectPath = useStore((s) => s.currentProjectPath);
+  const setCurrentProjectPath = useStore((s) => s.setCurrentProjectPath);
+  const upsertProject = useStore((s) => s.upsertProject);
   const upsertTask = useStore((s) => s.upsertTask);
   const savedStartSettings = useMemo(readSavedStartSettings, []);
   const [workspacePath, setWorkspacePath] = useState(
@@ -67,14 +69,7 @@ export function NewTaskPage() {
   const [pendingTaskMode, setPendingTaskMode] = useState<TaskMode>(savedStartSettings.taskMode ?? 'direct');
   const [isPickingWorkspace, setIsPickingWorkspace] = useState(false);
 
-  const { defaults, runtimeOptions, runtime, setRuntime, modelGroups, runtimeDefaultModel, model, setModel, reasoningEffort, setReasoningEffort, isLoading } = useAgentConfig(
-    undefined,
-    {
-      runtime: (savedStartSettings.runtime as Parameters<typeof useAgentConfig>[1] extends { runtime?: infer R } ? R : never) ?? null,
-      model: savedStartSettings.model ?? null,
-      reasoningEffort: (savedStartSettings.reasoningEffort as Parameters<typeof useAgentConfig>[1] extends { reasoningEffort?: infer R } ? R : never) ?? null,
-    },
-  );
+  const { defaults, runtimeOptions, runtime, setRuntime, modelGroups, runtimeDefaultModel, model, setModel, reasoningEffort, setReasoningEffort, isLoading } = useAgentConfig();
 
   const normalizedWorkspacePath = workspacePath.trim();
   const effectiveRuntime = runtime ?? defaults?.runtime ?? 'hermes';
@@ -150,7 +145,11 @@ export function NewTaskPage() {
           draft.imageMimeType,
         );
         if (!cancelled && file) {
-          setAttachments((current) => [...current, ...createComposerAttachments([file])]);
+          setAttachments((current) => (
+            current.some((attachment) => attachment.file.name === file.name && attachment.file.size === file.size)
+              ? current
+              : [...current, ...createComposerAttachments([file])]
+          ));
         }
       }
 
@@ -179,13 +178,25 @@ export function NewTaskPage() {
     setWorkspaceError(null);
     try {
       const result = await pickWorkspaceDirectory(normalizedWorkspacePath || null);
-      if (result.path) setWorkspacePath(result.path);
+      if (result.path) {
+        setWorkspacePath(result.path);
+        setCurrentProjectPath(result.path);
+        localStorage.setItem(START_SETTINGS_STORAGE_KEY, JSON.stringify({
+          ...readSavedStartSettings(),
+          workspacePath: result.path,
+        }));
+        void updateCurrentProject(result.path)
+          .then((current) => {
+            if (current.project) upsertProject(current.project);
+          })
+          .catch(() => undefined);
+      }
     } catch (error) {
       setWorkspaceError(toErrorMessage(error, 'Failed to choose project folder'));
     } finally {
       setIsPickingWorkspace(false);
     }
-  }, [isPickingWorkspace, isCreating, normalizedWorkspacePath]);
+  }, [isPickingWorkspace, isCreating, normalizedWorkspacePath, setCurrentProjectPath, upsertProject]);
 
   const handleSubmit = useCallback(async () => {
     const text = input.trim();

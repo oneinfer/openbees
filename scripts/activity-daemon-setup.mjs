@@ -437,7 +437,7 @@ export function ensureActivityDaemonEnvironment(options = {}) {
     BEES_ACTIVITY_ENABLED: 'true',
     BEES_ACTIVITY_HOST: '127.0.0.1',
     BEES_ACTIVITY_PORT: '4768',
-    BEES_ACTIVITY_PYTHON: python,
+    BEES_ACTIVITY_PYTHON: '',
     BEES_ACTIVITY_DATA_DIR: '~/.bees/activity-daemon',
     BEES_ACTIVITY_REQUIRE_INPUT_DEVICE: 'true',
   };

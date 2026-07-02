@@ -66,8 +66,10 @@ function workerEnv(): NodeJS.ProcessEnv {
     LUX_TTS_DEVICE: device(),
     LUX_TTS_THREADS: process.env.LUX_TTS_THREADS?.trim() || '2',
     LUX_TTS_REFERENCE_AUDIO_PATH: referenceAudioPath(),
+    LUX_TTS_REFERENCE_DURATION_SECONDS: process.env.LUX_TTS_REFERENCE_DURATION_SECONDS?.trim() || '5',
+    LUX_TTS_REFERENCE_RMS: process.env.LUX_TTS_REFERENCE_RMS?.trim() || '0.001',
     LUX_TTS_NUM_STEPS: process.env.LUX_TTS_NUM_STEPS?.trim() || '4',
-    LUX_TTS_T_SHIFT: process.env.LUX_TTS_T_SHIFT?.trim() || '0.9',
+    LUX_TTS_T_SHIFT: process.env.LUX_TTS_T_SHIFT?.trim() || '0.5',
     LUX_TTS_SPEED: process.env.LUX_TTS_SPEED?.trim() || '1.0',
   };
 }

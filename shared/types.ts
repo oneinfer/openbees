@@ -102,7 +102,10 @@ export type BoardEvent =
   | { type: 'project_saved'; project: Project }
   | { type: 'project_deleted'; path: string; taskIds: string[] }
   | { type: 'task_runs_snapshot'; runs: TaskRunState[] }
-  | { type: 'task_run_updated'; run: TaskRunState };
+  | { type: 'task_run_updated'; run: TaskRunState }
+  | { type: 'voice_wake_ack' }
+  | { type: 'voice_task_started'; taskId: string }
+  | { type: 'voice_conversation_reply'; sessionId: string; transcript: string };
 
 export type LiveChatMessage = TaskMessage & { tools?: ToolProgressEvent[]; timeline?: LiveChatTimelineItem[] };
 

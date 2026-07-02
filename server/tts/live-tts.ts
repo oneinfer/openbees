@@ -11,6 +11,8 @@ interface LiveTtsState {
   sequence: number;
   processing: boolean;
   flushTimer: ReturnType<typeof setTimeout> | null;
+  hadSubscriber: boolean;
+  pendingCleanupTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const states = new Map<string, LiveTtsState>();
@@ -23,7 +25,16 @@ function enabled(): boolean { return process.env.LUX_TTS_ENABLED?.trim().toLower
 function stateFor(taskId: string): LiveTtsState {
   let state = states.get(taskId);
   if (!state) {
-    state = { subscribers: new Set(), buffer: '', queue: [], sequence: 0, processing: false, flushTimer: null };
+    state = {
+      subscribers: new Set(),
+      buffer: '',
+      queue: [],
+      sequence: 0,
+      processing: false,
+      flushTimer: null,
+      hadSubscriber: false,
+      pendingCleanupTimer: null,
+    };
     states.set(taskId, state);
   }
   return state;
@@ -39,6 +50,8 @@ function clearState(taskId: string, state: LiveTtsState): void {
   state.queue = [];
   if (state.flushTimer) clearTimeout(state.flushTimer);
   state.flushTimer = null;
+  if (state.pendingCleanupTimer) clearTimeout(state.pendingCleanupTimer);
+  state.pendingCleanupTimer = null;
   if (state.subscribers.size === 0) states.delete(taskId);
 }
 
@@ -48,7 +61,7 @@ function broadcast(taskId: string, event: Record<string, unknown>): void {
   for (const subscriber of state.subscribers) {
     if (!writeEvent(subscriber, event)) state.subscribers.delete(subscriber);
   }
-  if (state.subscribers.size === 0) clearState(taskId, state);
+  if (state.subscribers.size === 0 && state.hadSubscriber) clearState(taskId, state);
 }
 
 function enqueue(taskId: string, state: LiveTtsState, text: string): void {
@@ -116,10 +129,22 @@ class LiveTtsCoordinator {
   preload(): Promise<void> { return luxTts.preload(); }
   stop(): Promise<void> { return luxTts.stop(); }
 
+  beginSession(id: string, ttlMs = 120_000): void {
+    if (!enabled()) return;
+    const state = stateFor(id);
+    if (state.hadSubscriber) return;
+    if (state.pendingCleanupTimer) clearTimeout(state.pendingCleanupTimer);
+    state.pendingCleanupTimer = setTimeout(() => {
+      const current = states.get(id);
+      if (current && !current.hadSubscriber) clearState(id, current);
+    }, ttlMs);
+    state.pendingCleanupTimer.unref?.();
+  }
+
   acceptDelta(taskId: string, text: string, options: { forceFlush?: boolean } = {}): void {
     if (!enabled() || !text) return;
     const state = states.get(taskId);
-    if (!state || state.subscribers.size === 0) return;
+    if (!state) return;
     state.buffer += text;
     extractReadySegments(taskId, state);
     if (options.forceFlush) {
@@ -146,10 +171,14 @@ class LiveTtsCoordinator {
   subscribe(taskId: string, res: Response): void {
     initSSE(res);
     const state = stateFor(taskId);
+    state.hadSubscriber = true;
+    if (state.pendingCleanupTimer) clearTimeout(state.pendingCleanupTimer);
+    state.pendingCleanupTimer = null;
     state.subscribers.add(res);
     void this.status()
       .then((status) => writeEvent(res, { type: 'ready', ...status }))
       .catch((error) => writeEvent(res, { type: 'ready', enabled: enabled(), available: false, error: error instanceof Error ? error.message : String(error) }));
+    if (state.queue.length > 0) void processQueue(taskId, state);
     res.on('close', () => {
       state.subscribers.delete(res);
       if (state.subscribers.size === 0) clearState(taskId, state);

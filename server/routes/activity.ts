@@ -35,6 +35,24 @@ router.get('/health', async (req, res) => {
   await proxyJson(req, res);
 });
 
+router.post('/start', async (_req, res) => {
+  try {
+    await activityDaemon.start();
+    res.json(await activityDaemon.status());
+  } catch (error) {
+    unavailable(res, error);
+  }
+});
+
+router.post('/stop', async (_req, res) => {
+  try {
+    await activityDaemon.stop();
+    res.json(await activityDaemon.status());
+  } catch (error) {
+    unavailable(res, error);
+  }
+});
+
 router.get('/events/latest', async (req, res) => {
   await proxyJson(req, res);
 });

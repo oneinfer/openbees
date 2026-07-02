@@ -3,11 +3,10 @@ from __future__ import annotations
 import audioop
 from datetime import datetime, timezone
 import difflib
+import io
 import json
-import os
 from pathlib import Path
 import re
-import tempfile
 import threading
 import time
 from typing import Any, Callable
@@ -1053,58 +1052,41 @@ class SpeechArmController:
             return False
 
     def _transcribe_audio(self, audio_data, label: str = "audio", *, save_debug: bool = True) -> str:
-        fd, temp_path = tempfile.mkstemp(prefix="oneinfer_command_", suffix=".wav")
-        os.close(fd)
-        with open(temp_path, "wb") as f:
-            f.write(audio_data.get_wav_data())
+        # Feed the WAV bytes to Granite ASR directly from memory instead of a
+        # temp-file round trip (write + read + delete) to shave latency off
+        # every transcription.
+        wav_bytes = audio_data.get_wav_data()
         debug_asr_path = (
             self._save_debug_audio_data(
                 f"{label}_asr_input",
                 audio_data,
-                {
-                    "asr_temp_path": temp_path,
-                    "handoff": "WAV bytes written immediately before Granite ASR transcription",
-                },
+                {"handoff": "WAV bytes handed in-memory to Granite ASR transcription"},
             )
             if save_debug else None
         )
 
         try:
-            transcript = self._run_granite_transcription(temp_path).strip().lower()
+            transcript = self._run_granite_transcription(io.BytesIO(wav_bytes)).strip().lower()
             self._update_debug_audio_metadata(
                 debug_asr_path,
-                {
-                    "transcript": transcript,
-                    "asr_temp_deleted_after_transcription": True,
-                },
+                {"transcript": transcript},
             )
             return transcript
         except Exception as error:
             self._update_debug_audio_metadata(
                 debug_asr_path,
-                {
-                    "transcription_error": str(error),
-                    "asr_temp_deleted_after_transcription": True,
-                },
+                {"transcription_error": str(error)},
             )
             if self._should_retry_on_cpu(error):
                 self._mark_status(f"ASR inference failed on {self._resolved_device_map}/{self._resolved_dtype}: {error}; retrying on cpu/float32")
                 self._reset_model_for_cpu_float32()
-                transcript = self._run_granite_transcription(temp_path).strip().lower()
+                transcript = self._run_granite_transcription(io.BytesIO(wav_bytes)).strip().lower()
                 self._update_debug_audio_metadata(
                     debug_asr_path,
-                    {
-                        "transcript_after_cpu_retry": transcript,
-                        "asr_temp_deleted_after_transcription": True,
-                    },
+                    {"transcript_after_cpu_retry": transcript},
                 )
                 return transcript
             raise
-        finally:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
 
     def _command_from_wake_audio(self, wake_audio) -> str:
         wake_text = self._transcribe_audio(wake_audio, "wake_audio_command_check", save_debug=False)
@@ -1118,7 +1100,7 @@ class SpeechArmController:
             self._mark_status(f"ignored non-command wake audio transcript: {wake_text}")
         return command
 
-    def _run_granite_transcription(self, audio_path: str) -> str:
+    def _run_granite_transcription(self, audio_source: str | io.BytesIO) -> str:
         import torch
         import soundfile as sf
         import torchaudio
@@ -1130,7 +1112,7 @@ class SpeechArmController:
             model = runtime["model"]
             device = runtime["device"]
 
-            audio_array, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
+            audio_array, sample_rate = sf.read(audio_source, dtype="float32", always_2d=True)
             wav = torch.from_numpy(audio_array).transpose(0, 1)
             if wav.numel() == 0:
                 return ""

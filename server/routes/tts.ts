@@ -36,3 +36,9 @@ ttsRouter.get('/tasks/:id/live', async (req, res) => {
   }
   liveTts.subscribe(req.params.id, res);
 });
+
+// Ad-hoc voice-conversation sessions have no backing Task row, so there's nothing to
+// ACL against here beyond the blanket /api org-auth middleware — same as /synthesize.
+ttsRouter.get('/sessions/:id/live', (req, res) => {
+  liveTts.subscribe(req.params.id, res);
+});

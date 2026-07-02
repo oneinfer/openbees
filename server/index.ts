@@ -9,6 +9,12 @@ import { mountFrontend, type FrontendCleanup } from './frontend.js';
 import { CURRENT_PROJECT_SETTING_KEY } from './routes/projects.js';
 import { ensureBundledSkillsLinked } from './skills/catalog.js';
 
+// Safety net: a single unhandled rejection anywhere (e.g. a fire-and-forget background task)
+// must never take down the whole server — Node terminates the process on this by default.
+process.on('unhandledRejection', (reason) => {
+  console.error('[server] unhandled promise rejection (continuing):', reason);
+});
+
 const PORT = parseInt(process.env.PORT || '6969', 10);
 
 const httpServer = createServer(app);
@@ -19,7 +25,6 @@ type ShutdownReason = NodeJS.Signals | 'startup-error';
 
 async function main() {
   ensureBundledSkillsLinked();
-  await activityDaemon.start();
   closeFrontend = await mountFrontend(app, httpServer);
   httpServer.listen(PORT);
   await once(httpServer, 'listening');
