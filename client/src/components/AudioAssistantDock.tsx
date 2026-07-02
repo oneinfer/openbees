@@ -1,0 +1,446 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Bot, ChevronDown, Loader2, Mic, MicOff, Volume2, VolumeX, X } from 'lucide-react';
+import { apiAuthHeaders, BASE, fetchTtsStatus, liveTaskChatUrl, liveTaskTtsUrl, transcribeAudio, type TtsStatusResponse } from '../lib/api';
+import { toErrorMessage } from '../lib/format';
+import { useStore } from '../lib/store';
+import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
+
+const ASSISTANT_TASK_KEY = 'bees:audioAssistantTaskId';
+const ASSISTANT_ENABLED_KEY = 'bees:audioAssistantEnabled';
+
+type TtsEvent =
+  | { type: 'ready'; enabled?: boolean; available?: boolean; error?: string }
+  | { type: 'audio'; audioBase64: string; sampleRate: number; sampleCount?: number; segmentId?: number }
+  | { type: 'dropped'; count?: number }
+  | { type: 'error'; error?: string }
+  | { type: 'end' };
+
+type ChatLiveEvent =
+  | { type: 'snapshot' }
+  | { type: 'text_delta'; content?: string }
+  | { type: 'done' }
+  | { type: 'error'; error?: string };
+
+const SPEECH_SEGMENT_PATTERN = /(.+?[.!?])(?:\s+|$)/s;
+
+function readStoredBoolean(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function readCookie(name: string): string | null {
+  const prefix = `${name}=`;
+  const match = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+  return match ? decodeURIComponent(match.slice(prefix.length)) : null;
+}
+
+function pcm16Base64ToFloat32(base64: string): Float32Array {
+  const binary = atob(base64);
+  const samples = new Float32Array(Math.floor(binary.length / 2));
+  for (let i = 0; i < samples.length; i += 1) {
+    const lo = binary.charCodeAt(i * 2);
+    const hi = binary.charCodeAt(i * 2 + 1);
+    const signed = (hi << 8) | lo;
+    const value = signed >= 0x8000 ? signed - 0x10000 : signed;
+    samples[i] = Math.max(-1, Math.min(1, value / 0x8000));
+  }
+  return samples;
+}
+
+class AudioQueue {
+  private context: AudioContext | null = null;
+  private nextStartTime = 0;
+
+  async play(base64: string, sampleRate: number): Promise<void> {
+    const AudioContextCtor = window.AudioContext ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) throw new Error('Audio playback is not supported in this browser.');
+    if (!this.context || this.context.state === 'closed') this.context = new AudioContextCtor();
+    if (this.context.state === 'suspended') await this.context.resume();
+
+    const samples = pcm16Base64ToFloat32(base64);
+    if (samples.length === 0) return;
+
+    const buffer = this.context.createBuffer(1, samples.length, sampleRate);
+    buffer.copyToChannel(samples, 0);
+    const source = this.context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.context.destination);
+
+    const startAt = Math.max(this.context.currentTime + 0.03, this.nextStartTime);
+    source.start(startAt);
+    this.nextStartTime = startAt + buffer.duration;
+  }
+
+  reset(): void {
+    this.nextStartTime = this.context?.currentTime ?? 0;
+  }
+
+  close(): void {
+    const context = this.context;
+    this.context = null;
+    this.nextStartTime = 0;
+    if (context && context.state !== 'closed') void context.close().catch(() => undefined);
+  }
+}
+
+class BrowserSpeechQueue {
+  private buffer = '';
+
+  available(): boolean {
+    return typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined';
+  }
+
+  acceptText(text: string, forceFlush = false): void {
+    if (!this.available()) return;
+    this.buffer += text;
+    this.flushReadySegments(forceFlush);
+  }
+
+  reset(): void {
+    this.buffer = '';
+    if (this.available()) window.speechSynthesis.cancel();
+  }
+
+  private flushReadySegments(forceFlush: boolean): void {
+    while (this.buffer.trim()) {
+      const text = this.buffer.trim();
+      const match = text.match(SPEECH_SEGMENT_PATTERN);
+      if (match?.index === 0 && match[1]) {
+        this.speak(match[1]);
+        this.buffer = text.slice(match[0].length).trim();
+        continue;
+      }
+      if (forceFlush || text.length >= 320) {
+        const splitAt = forceFlush ? text.length : Math.max(120, text.lastIndexOf(' ', 320));
+        this.speak(text.slice(0, splitAt));
+        this.buffer = text.slice(splitAt).trim();
+        continue;
+      }
+      this.buffer = text;
+      return;
+    }
+  }
+
+  private speak(text: string): void {
+    const segment = text.trim();
+    if (!segment) return;
+    const utterance = new SpeechSynthesisUtterance(segment);
+    utterance.rate = 1;
+    window.speechSynthesis.speak(utterance);
+  }
+}
+
+export function AudioAssistantDock() {
+  const tasks = useStore((s) => s.tasks);
+  const activeTasks = useMemo(
+    () => tasks
+      .filter((task) => task.status === 'in_progress')
+      .sort((a, b) => b.updated_at - a.updated_at),
+    [tasks],
+  );
+  const [expanded, setExpanded] = useState(() => readStoredBoolean(ASSISTANT_ENABLED_KEY));
+  const [audioEnabled, setAudioEnabled] = useState(() => readStoredBoolean(ASSISTANT_ENABLED_KEY));
+  const [selectedTaskId, setSelectedTaskId] = useState(() => {
+    try {
+      return localStorage.getItem(ASSISTANT_TASK_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const [ttsStatus, setTtsStatus] = useState<TtsStatusResponse | null>(null);
+  const [status, setStatus] = useState('Audio assistant idle');
+  const [error, setError] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const ttsSourceRef = useRef<EventSource | null>(null);
+  const chatSpeechSourceRef = useRef<EventSource | null>(null);
+  const audioQueueRef = useRef(new AudioQueue());
+  const browserSpeechRef = useRef(new BrowserSpeechQueue());
+
+  const selectedTask = useMemo(
+    () => activeTasks.find((task) => task.id === selectedTaskId) ?? activeTasks[0] ?? null,
+    [activeTasks, selectedTaskId],
+  );
+  const effectiveTaskId = selectedTask?.id ?? '';
+
+  useEffect(() => {
+    if (!selectedTaskId && activeTasks[0]) setSelectedTaskId(activeTasks[0].id);
+  }, [activeTasks, selectedTaskId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ASSISTANT_ENABLED_KEY, String(audioEnabled));
+      if (effectiveTaskId) localStorage.setItem(ASSISTANT_TASK_KEY, effectiveTaskId);
+    } catch {
+      // Local persistence is convenience only.
+    }
+  }, [audioEnabled, effectiveTaskId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchTtsStatus()
+      .then((nextStatus) => {
+        if (!cancelled) setTtsStatus(nextStatus);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(toErrorMessage(err, 'Audio output is unavailable'));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    ttsSourceRef.current?.close();
+    ttsSourceRef.current = null;
+    audioQueueRef.current.reset();
+
+    if (!audioEnabled || !effectiveTaskId) return undefined;
+
+    const source = new EventSource(liveTaskTtsUrl(effectiveTaskId));
+    ttsSourceRef.current = source;
+    source.onmessage = (message) => {
+      let event: TtsEvent;
+      try {
+        event = JSON.parse(message.data) as TtsEvent;
+      } catch {
+        return;
+      }
+
+      if (event.type === 'ready') {
+        if (event.available === false) setError(event.error || 'Audio output is unavailable');
+        else setStatus('Listening');
+        return;
+      }
+      if (event.type === 'audio') {
+        void audioQueueRef.current.play(event.audioBase64, event.sampleRate).catch((err) => {
+          setError(toErrorMessage(err, 'Audio playback failed'));
+        });
+        return;
+      }
+      if (event.type === 'error') setError(event.error || 'Audio output failed');
+    };
+    source.onerror = () => {};
+
+    return () => {
+      source.close();
+      if (ttsSourceRef.current === source) ttsSourceRef.current = null;
+    };
+  }, [audioEnabled, effectiveTaskId]);
+
+  const outputReady = !!ttsStatus?.enabled && !!ttsStatus.available;
+  const browserSpeechReady = browserSpeechRef.current.available();
+  const audioOutputReady = outputReady || browserSpeechReady;
+  const canRecord = audioEnabled && !!effectiveTaskId && !isSending && audioOutputReady;
+  const compactTitle = audioEnabled ? 'Audio assistant' : 'Enable audio assistant';
+
+  useEffect(() => {
+    chatSpeechSourceRef.current?.close();
+    chatSpeechSourceRef.current = null;
+    browserSpeechRef.current.reset();
+
+    if (!audioEnabled || !effectiveTaskId || outputReady || !browserSpeechRef.current.available()) return undefined;
+
+    const source = new EventSource(liveTaskChatUrl(effectiveTaskId));
+    chatSpeechSourceRef.current = source;
+    source.onmessage = (message) => {
+      let event: ChatLiveEvent;
+      try {
+        event = JSON.parse(message.data) as ChatLiveEvent;
+      } catch {
+        return;
+      }
+
+      if (event.type === 'text_delta' && event.content) {
+        browserSpeechRef.current.acceptText(event.content);
+        return;
+      }
+      if (event.type === 'done') browserSpeechRef.current.acceptText('', true);
+      if (event.type === 'error') setError(event.error || 'Assistant stream failed');
+    };
+    source.onerror = () => {};
+
+    return () => {
+      source.close();
+      if (chatSpeechSourceRef.current === source) chatSpeechSourceRef.current = null;
+    };
+  }, [audioEnabled, effectiveTaskId, outputReady]);
+
+  useEffect(() => () => {
+    ttsSourceRef.current?.close();
+    chatSpeechSourceRef.current?.close();
+    audioQueueRef.current.close();
+    browserSpeechRef.current.reset();
+  }, []);
+
+  const sendTranscript = useCallback(async (text: string) => {
+    const content = text.trim();
+    if (!content || !effectiveTaskId) return;
+    setIsSending(true);
+    setStatus('Sending');
+    setError(null);
+    try {
+      const res = await fetch(`${BASE}/tasks/${encodeURIComponent(effectiveTaskId)}/messages`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          ...apiAuthHeaders(),
+          ...(readCookie('bees_csrf_token') ? { 'X-CSRF-Token': readCookie('bees_csrf_token')! } : {}),
+        },
+        body: JSON.stringify({ content }),
+      });
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setStatus('Assistant responding');
+    } catch (err) {
+      setError(toErrorMessage(err, 'Failed to send voice message'));
+    } finally {
+      setIsSending(false);
+    }
+  }, [effectiveTaskId]);
+
+  const recorder = useVoiceRecorder(
+    () => undefined,
+    async (audio) => {
+      setStatus('Transcribing');
+      setError(null);
+      const result = await transcribeAudio(audio);
+      const text = result.text.trim();
+      if (!text) {
+        setError('No speech was detected.');
+        setStatus('Listening');
+        return;
+      }
+      await sendTranscript(text);
+    },
+  );
+
+  useEffect(() => {
+    if (recorder.error) setError(recorder.error);
+  }, [recorder.error]);
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        title={compactTitle}
+        aria-label={compactTitle}
+        className="fixed bottom-5 right-5 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 shadow-lg transition hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+      >
+        <Bot size={20} />
+      </button>
+    );
+  }
+
+  return (
+    <section className="fixed bottom-5 right-5 z-40 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+      <div className="flex items-center gap-2 border-b border-zinc-100 px-3 py-2 dark:border-zinc-800">
+        <Bot size={17} className="shrink-0 text-zinc-500 dark:text-zinc-400" />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">Audio assistant</p>
+          <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">{status}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          title="Collapse"
+          aria-label="Collapse audio assistant"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+        >
+          <ChevronDown size={16} />
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setAudioEnabled(false);
+            setExpanded(false);
+          }}
+          title="Close"
+          aria-label="Close audio assistant"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+        >
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="space-y-3 p-3">
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">Assistant task</span>
+          <select
+            value={effectiveTaskId}
+            onChange={(event) => setSelectedTaskId(event.target.value)}
+            disabled={activeTasks.length === 0}
+            className="h-9 w-full rounded-lg border border-zinc-200 bg-white px-2 text-sm text-zinc-800 outline-none transition focus:border-zinc-400 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
+          >
+            {activeTasks.length === 0 ? (
+              <option value="">Start a task first</option>
+            ) : activeTasks.map((task) => (
+              <option key={task.id} value={task.id}>{task.title}</option>
+            ))}
+          </select>
+        </label>
+
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              setAudioEnabled((value) => !value);
+              setError(null);
+            }}
+            aria-pressed={audioEnabled}
+            className={`inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition ${
+              audioEnabled
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300'
+                : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-800'
+            }`}
+          >
+            {audioEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
+            <span>{audioEnabled ? 'Audio on' : 'Audio off'}</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!canRecord || recorder.isTranscribing}
+            onClick={() => {
+              if (recorder.isRecording) recorder.stop();
+              else void recorder.start();
+            }}
+            aria-pressed={recorder.isRecording}
+            title={recorder.isRecording ? 'Stop recording' : 'Record'}
+            className={`inline-flex h-11 w-11 items-center justify-center rounded-full transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              recorder.isRecording
+                ? 'bg-red-600 text-white hover:bg-red-700'
+                : 'bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-300'
+            }`}
+          >
+            {recorder.isTranscribing || isSending ? (
+              <Loader2 size={18} className="animate-spin" />
+            ) : recorder.isRecording ? (
+              <MicOff size={18} />
+            ) : (
+              <Mic size={18} />
+            )}
+          </button>
+        </div>
+
+        {!outputReady && audioEnabled && !browserSpeechReady && (
+          <p className="text-xs text-amber-600 dark:text-amber-300">
+            {ttsStatus?.error || 'Audio output is not available.'}
+          </p>
+        )}
+        {!outputReady && audioEnabled && browserSpeechReady && (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">Using browser voice output.</p>
+        )}
+        {!effectiveTaskId && (
+          <p className="text-xs text-amber-600 dark:text-amber-300">Start a task to use audio chat.</p>
+        )}
+        {error && <p className="text-xs text-red-500 dark:text-red-400">{error}</p>}
+      </div>
+    </section>
+  );
+}

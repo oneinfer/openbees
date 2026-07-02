@@ -16,6 +16,7 @@ import { OrganizationGate } from './components/OrganizationGate';
 import { OrganizationPage } from './components/OrganizationPage';
 import { AuthCallbackPage } from './components/AuthCallbackPage';
 import { TaskCreatedToast } from './components/TaskCreatedToast';
+import { AudioAssistantDock } from './components/AudioAssistantDock';
 import { useActivityCapture } from './hooks/useActivityCapture';
 import { useTasks } from './hooks/useTasks';
 import { useTheme } from './hooks/useTheme';
@@ -152,6 +153,7 @@ function AppShell() {
         </Routes>
       </main>
       <TaskCreatedToast />
+      <AudioAssistantDock />
     </div>
   );
 }

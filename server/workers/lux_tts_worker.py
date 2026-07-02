@@ -33,6 +33,7 @@ def _stub_torchcodec_if_broken() -> None:
         return  # loaded fine — nothing to do
     except (RuntimeError, OSError, ImportError):
         pass
+    import importlib.metadata
     import importlib.machinery
     # Remove any partial state left by the failed import
     for key in [k for k in sys.modules if k == "torchcodec" or k.startswith("torchcodec.")]:
@@ -76,6 +77,17 @@ def _stub_torchcodec_if_broken() -> None:
     _stubs["torchcodec"].decoders = _stubs["torchcodec.decoders"]
     _stubs["torchcodec"].encoders = _stubs["torchcodec.encoders"]
     _stubs["torchcodec"].samplers = _stubs["torchcodec.samplers"]
+
+    # Transformers checks both importability and package metadata for torchcodec.
+    # The stub is process-local, so provide matching process-local metadata too.
+    _metadata_version = importlib.metadata.version
+
+    def _version(name: str) -> str:
+        if name == "torchcodec":
+            return "0.0.0"
+        return _metadata_version(name)
+
+    importlib.metadata.version = _version
 
 
 _stub_torchcodec_if_broken()

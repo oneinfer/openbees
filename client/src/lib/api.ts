@@ -271,6 +271,16 @@ export function liveTaskTtsUrl(taskId: string) {
   return `${BASE}/tts/tasks/${encodeURIComponent(taskId)}/live${query ? `?${query}` : ''}`;
 }
 
+export function liveTaskChatUrl(taskId: string) {
+  const params = new URLSearchParams();
+  const organizationId = hasAuthSessionCookie() ? getSelectedOrganizationId() : null;
+  const accessToken = getStoredAccessToken();
+  if (organizationId) params.set('organizationId', organizationId);
+  if (accessToken) params.set('accessToken', accessToken);
+  const query = params.toString();
+  return `${BASE}/tasks/${encodeURIComponent(taskId)}/live${query ? `?${query}` : ''}`;
+}
+
 export function transcribeAudio(audio: Blob, language?: string) {
   const formData = new FormData();
   const extension = audio.type.includes('wav') ? 'wav' : audio.type.includes('ogg') ? 'ogg' : 'webm';

@@ -13,7 +13,8 @@ const DEFAULT_MODEL = 'YatharthS/LuxTTS';
 const DEFAULT_REFERENCE_AUDIO = 'voice-reference.wav';
 const LINACODEC_PACKAGE = 'git+https://github.com/ysharma3501/LinaCodec.git';
 const PIPER_PHONEMIZE_FIND_LINKS = 'https://k2-fsa.github.io/icefall/piper_phonemize.html';
-const PACKAGES = ['numpy', 'git+https://github.com/ysharma3501/LuxTTS.git'];
+const K2_CPU_WHEEL_INDEX = 'https://k2-fsa.github.io/k2/cpu.html';
+const PACKAGES = ['numpy', 'transformers<=4.57.6', 'git+https://github.com/ysharma3501/LuxTTS.git'];
 
 function isWindows() { return platform() === 'win32'; }
 function venvDir() { return resolve(process.cwd(), '.venv-granite-asr'); }
@@ -36,6 +37,71 @@ function run(file, args) {
   if (result.status !== 0) throw new Error(`${file} ${args.join(' ')} exited with code ${result.status ?? 'unknown'}`);
 }
 function moduleInstalled(python, mod) { return spawnSync(python, ['-c', `import importlib.util,sys;sys.exit(0 if importlib.util.find_spec(${JSON.stringify(mod)}) else 1)`], { stdio: 'ignore', env: envForVenv() }).status === 0; }
+function k2Accelerated(python) {
+  return spawnSync(python, ['-c', [
+    'import sys',
+    'try:',
+    '    import k2',
+    'except Exception:',
+    '    sys.exit(1)',
+    'required=("swoosh_l","swoosh_r","swoosh_l_forward","swoosh_r_forward","swoosh_l_forward_and_deriv","swoosh_r_forward_and_deriv")',
+    'sys.exit(0 if all(callable(getattr(k2,name,None)) for name in required) else 1)',
+  ].join('\n')], { stdio: 'ignore', env: envForVenv() }).status === 0;
+}
+function officialK2WheelUrl(python) {
+  if (!isWindows()) return '';
+  const script = [
+    'import re, sys, urllib.request',
+    'try:',
+    '    import torch',
+    'except Exception:',
+    '    sys.exit(1)',
+    'torch_match=re.match(r"\\d+\\.\\d+\\.\\d+", torch.__version__)',
+    'if not torch_match:',
+    '    sys.exit(1)',
+    'py=f"cp{sys.version_info.major}{sys.version_info.minor}"',
+    'platform="win_amd64" if sys.maxsize > 2**32 else "win32"',
+    `html=urllib.request.urlopen(${JSON.stringify(K2_CPU_WHEEL_INDEX)}, timeout=30).read().decode("utf-8", errors="ignore")`,
+    'urls=sorted(set(re.findall(r"https://[^\\\"<> ]+k2-[^\\\"<> ]+\\.whl", html)))',
+    'needles=("windows-cpu", f"+cpu.torch{torch_match.group(0)}", f"-{py}-{py}-{platform}.whl")',
+    'matches=[url for url in urls if all(needle in url for needle in needles)]',
+    'if not matches:',
+    '    sys.exit(1)',
+    'print(matches[-1])',
+  ].join('\n');
+  const result = spawnSync(python, ['-c', script], { encoding: 'utf8', env: envForVenv(), stdio: ['ignore', 'pipe', 'ignore'] });
+  return result.status === 0 ? result.stdout.trim().split(/\r?\n/).at(-1)?.trim() || '' : '';
+}
+function ensureK2Acceleration(python, installIfMissing) {
+  if (k2Accelerated(python)) return true;
+  const wheel = officialK2WheelUrl(python);
+  if (!wheel) {
+    console.warn('[lux-tts-setup] No matching official k2 Windows CPU wheel found; LuxTTS will use the PyTorch Swoosh fallback.');
+    return false;
+  }
+  if (!installIfMissing) {
+    console.warn(`[lux-tts-setup] k2 acceleration is missing. Matching wheel: ${wheel}`);
+    return false;
+  }
+  console.log('[lux-tts-setup] Installing k2 acceleration for ZipVoice...');
+  run(python, ['-m','pip','install','--upgrade','--upgrade-strategy','only-if-needed',wheel]);
+  return k2Accelerated(python);
+}
+function transformersCompatible(python) {
+  return spawnSync(python, ['-c', [
+    'import importlib.metadata,sys',
+    'try:',
+    '    version=importlib.metadata.version("transformers")',
+    'except importlib.metadata.PackageNotFoundError:',
+    '    sys.exit(1)',
+    'parts=[]',
+    'for part in version.split(".")[:3]:',
+    '    try: parts.append(int(part))',
+    '    except ValueError: parts.append(0)',
+    'while len(parts)<3: parts.append(0)',
+    'sys.exit(0 if parts <= [4,57,6] else 1)',
+  ].join('\n')], { stdio: 'ignore', env: envForVenv() }).status === 0;
+}
 function parseEnv(path) {
   if (!exists(path)) return {};
   const out = {};
@@ -91,9 +157,11 @@ export function ensureLuxTtsEnvironment(options = {}) {
   Object.assign(process.env, values);
   if (!enabled) { console.log(`[lux-tts-setup] LUX_TTS_ENABLED=${values.LUX_TTS_ENABLED}`); console.log('[lux-tts-setup] LuxTTS disabled'); return { python, installed: false, venvDir: venvDir(), binDir: venvBin() }; }
   if (!exists(python)) { const source = bootstrapPython(); if (!source) throw new Error('No Python executable found for LuxTTS setup.'); if (installIfMissing) { console.log(`[lux-tts-setup] Creating ${venvDir()} with ${source}`); run(source, ['-m','venv',venvDir()]); } }
-  if (!moduleInstalled(python, 'zipvoice') || !moduleInstalled(python, 'numpy') || !moduleInstalled(python, 'linacodec')) { if (!installIfMissing) console.warn('[lux-tts-setup] LuxTTS dependencies are missing and install is disabled.'); else { console.log('[lux-tts-setup] Installing LuxTTS dependencies into .venv-granite-asr...'); if (!moduleInstalled(python, 'linacodec')) run(python, ['-m','pip','install','--upgrade','--upgrade-strategy','only-if-needed',LINACODEC_PACKAGE]); run(python, ['-m','pip','install','--upgrade','--upgrade-strategy','only-if-needed','--find-links',PIPER_PHONEMIZE_FIND_LINKS,...PACKAGES]); } }
+  if (!moduleInstalled(python, 'zipvoice') || !moduleInstalled(python, 'numpy') || !moduleInstalled(python, 'linacodec') || !transformersCompatible(python)) { if (!installIfMissing) console.warn('[lux-tts-setup] LuxTTS dependencies are missing and install is disabled.'); else { console.log('[lux-tts-setup] Installing LuxTTS dependencies into .venv-granite-asr...'); if (!moduleInstalled(python, 'linacodec')) run(python, ['-m','pip','install','--upgrade','--upgrade-strategy','only-if-needed',LINACODEC_PACKAGE]); run(python, ['-m','pip','install','--upgrade','--upgrade-strategy','only-if-needed','--find-links',PIPER_PHONEMIZE_FIND_LINKS,...PACKAGES]); } }
+  const k2Ready = ensureK2Acceleration(python, installIfMissing);
   const ready = exists(python) && moduleInstalled(python, 'zipvoice') && moduleInstalled(python, 'numpy');
   console.log(`[lux-tts-setup] LUX_TTS_ENABLED=${values.LUX_TTS_ENABLED}`); console.log(`[lux-tts-setup] LUX_TTS_PYTHON=${values.LUX_TTS_PYTHON}`); console.log(`[lux-tts-setup] LuxTTS dependencies ${ready ? 'ready' : 'not installed'}`);
+  if (isWindows()) console.log(`[lux-tts-setup] k2 acceleration ${k2Ready ? 'ready' : 'unavailable'}`);
   if (!ready && installIfMissing) throw new Error('LuxTTS dependencies were not installed successfully.');
   return { python, installed: ready, venvDir: venvDir(), binDir: venvBin() };
 }

@@ -8,8 +8,8 @@ import { ensureSupportedNodeVersion } from './runtime.mjs';
 ensureSupportedNodeVersion('npm run dev');
 ensureHermesEnvironment({ writeExampleEnv: true });
 ensureGraniteAsrEnvironment({ enabled: true, writeExampleEnv: true });
-ensureLuxTtsEnvironment({ writeExampleEnv: true });
 ensureActivityDaemonEnvironment({ failOnInstallError: true, writeExampleEnv: true });
+ensureLuxTtsEnvironment({ writeExampleEnv: true });
 
 process.env.NODE_ENV = 'development';
 await import('../server/index.ts');
